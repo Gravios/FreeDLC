@@ -341,28 +341,10 @@ def video_inference_superanimal(
     framework = available_architectures[model_name]
     print(f"Using {framework} for model {model_name}")
     if framework == "tensorflow":
-        from deeplabcut.pose_estimation_tensorflow.modelzoo.api.superanimal_inference import (
-            _video_inference_superanimal,
-        )
-
-        weight_folder = get_snapshot_folder_path() / f"{superanimal_name}_{model_name}"
-        if not weight_folder.exists():
-            download_huggingface_model(superanimal_name, target_dir=str(weight_folder), rename_mapping=None)
-
-        if isinstance(videos, str):
-            videos = [videos]
-        _video_inference_superanimal(
-            videos,
-            superanimal_name,
-            model_name,
-            scale_list,
-            video_extensions,
-            video_adapt,
-            plot_trajectories,
-            pcutoff,
-            adapt_iterations,
-            pseudo_threshold,
-            create_labeled_video=create_labeled_video,
+        raise NotImplementedError(
+            f"SuperAnimal model {model_name!r} runs on the TensorFlow engine, which has "
+            "been removed from this build. Choose a PyTorch-framework SuperAnimal model "
+            "(see models_to_framework.json) instead."
         )
     elif framework == "pytorch":
         if model_name.startswith("fmpose3d"):
@@ -575,7 +557,7 @@ def video_inference_superanimal(
 
                 annotations = temp_obj["annotations"]
                 if len(annotations) == 0:
-                    print(f"No valid predictions from {str(video_path)}. Check the quality of the video")
+                    print(f"No valid predictions from {video_path!s}. Check the quality of the video")
                     return
 
                 if superanimal_name == "superanimal_humanbody":

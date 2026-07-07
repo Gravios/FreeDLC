@@ -25,6 +25,15 @@ from deeplabcut.generate_training_dataset.metadata import get_shuffle_engine
 
 DEFAULT_ENGINE = Engine.PYTORCH
 
+# The TensorFlow engine implementation has been removed from this build. Shuffles /
+# projects created with it (Engine.TF) can no longer be trained, evaluated or analyzed;
+# the public API raises this message rather than silently doing nothing.
+_TF_REMOVED_MSG = (
+    "The TensorFlow engine has been removed from this build of DeepLabCut. This "
+    "project/shuffle was created with the TensorFlow engine (Engine.TF); retrain it "
+    "with the PyTorch engine (Engine.PYTORCH) to continue."
+)
+
 
 def get_project_engine(cfg: dict) -> Engine:
     """
@@ -264,27 +273,7 @@ def train_network(
         )
 
     if engine == Engine.TF:
-        from deeplabcut.pose_estimation_tensorflow import train_network
-
-        if max_snapshots_to_keep is None:
-            max_snapshots_to_keep = 5
-
-        return train_network(
-            str(config),
-            shuffle=shuffle,
-            trainingsetindex=trainingsetindex,
-            max_snapshots_to_keep=max_snapshots_to_keep,
-            displayiters=display_iters,
-            saveiters=save_iters,
-            maxiters=max_iters,
-            allow_growth=allow_growth,
-            gputouse=gputouse,
-            autotune=autotune,
-            keepdeconvweights=keepdeconvweights,
-            superanimal_name=superanimal_name,
-            superanimal_transfer_learning=superanimal_transfer_learning,
-            modelprefix=modelprefix,
-        )
+        raise NotImplementedError(_TF_REMOVED_MSG)
     elif engine == Engine.PYTORCH:
         from deeplabcut.pose_estimation_pytorch.apis import train_network
 
@@ -354,14 +343,7 @@ def return_train_network_path(
         )
 
     if engine == Engine.TF:
-        from deeplabcut.pose_estimation_tensorflow import return_train_network_path
-
-        return return_train_network_path(
-            config,
-            shuffle=shuffle,
-            trainingsetindex=trainingsetindex,
-            modelprefix=modelprefix,
-        )
+        raise NotImplementedError(_TF_REMOVED_MSG)
     elif engine == Engine.PYTORCH:
         from deeplabcut.pose_estimation_pytorch.apis.utils import (
             return_train_network_path,
@@ -537,21 +519,7 @@ def evaluate_network(
         engine = engines.pop()
 
     if engine == Engine.TF:
-        from deeplabcut.pose_estimation_tensorflow import evaluate_network
-
-        return evaluate_network(
-            str(config),
-            Shuffles=shuffles,
-            trainingsetindex=trainingsetindex,
-            plotting=plotting,
-            show_errors=show_errors,
-            comparisonbodyparts=comparison_bodyparts,
-            gputouse=gputouse,
-            rescale=rescale,
-            modelprefix=modelprefix,
-            per_keypoint_evaluation=per_keypoint_evaluation,
-            snapshots_to_evaluate=snapshots_to_evaluate,
-        )
+        raise NotImplementedError(_TF_REMOVED_MSG)
     elif engine == Engine.PYTORCH:
         from deeplabcut.pose_estimation_pytorch.apis import evaluate_network
 
@@ -651,20 +619,7 @@ def return_evaluate_network_data(
         )
 
     if engine == Engine.TF:
-        from deeplabcut.pose_estimation_tensorflow import return_evaluate_network_data
-
-        return return_evaluate_network_data(
-            config,
-            shuffle=shuffle,
-            trainingsetindex=trainingsetindex,
-            comparisonbodyparts=comparison_bodyparts,
-            Snapindex=snapshotindex,
-            rescale=rescale,
-            fulldata=fulldata,
-            show_errors=show_errors,
-            modelprefix=modelprefix,
-            returnjustfns=returnjustfns,
-        )
+        raise NotImplementedError(_TF_REMOVED_MSG)
 
     raise NotImplementedError(f"This function is not implemented for {engine}")
 
@@ -924,37 +879,7 @@ def analyze_videos(
         )
 
     if engine == Engine.TF:
-        from deeplabcut.pose_estimation_tensorflow import analyze_videos
-
-        kwargs = {}
-        if use_openvino is not None:  # otherwise default comes from tensorflow API
-            kwargs["use_openvino"] = use_openvino
-
-        return analyze_videos(
-            config,
-            videos,
-            video_extensions=video_extensions,
-            shuffle=shuffle,
-            trainingsetindex=trainingsetindex,
-            gputouse=gputouse,
-            save_as_csv=save_as_csv,
-            in_random_order=in_random_order,
-            destfolder=destfolder,
-            batchsize=batch_size,
-            cropping=cropping,
-            TFGPUinference=TFGPUinference,
-            dynamic=dynamic,
-            modelprefix=modelprefix,
-            robust_nframes=robust_nframes,
-            allow_growth=allow_growth,
-            use_shelve=use_shelve,
-            auto_track=auto_track,
-            n_tracks=n_tracks,
-            animal_names=animal_names,
-            calibrate=calibrate,
-            identity_only=identity_only,
-            **kwargs,
-        )
+        raise NotImplementedError(_TF_REMOVED_MSG)
     elif engine == Engine.PYTORCH:
         from deeplabcut.pose_estimation_pytorch.apis import analyze_videos
 
@@ -1097,24 +1022,7 @@ def create_tracking_dataset(
         )
 
     if engine == Engine.TF:
-        from deeplabcut.pose_estimation_tensorflow import create_tracking_dataset
-
-        return create_tracking_dataset(
-            config,
-            videos,
-            track_method,
-            video_extensions=video_extensions,
-            shuffle=shuffle,
-            trainingsetindex=trainingsetindex,
-            gputouse=gputouse,
-            destfolder=destfolder,
-            batchsize=batch_size,
-            cropping=cropping,
-            TFGPUinference=TFGPUinference,
-            modelprefix=modelprefix,
-            robust_nframes=robust_nframes,
-            n_triplets=n_triplets,
-        )
+        raise NotImplementedError(_TF_REMOVED_MSG)
     elif engine == Engine.PYTORCH:
         from deeplabcut.pose_estimation_pytorch.apis import create_tracking_dataset
 
@@ -1396,18 +1304,7 @@ def analyze_time_lapse_frames(
         )
 
     if engine == Engine.TF:
-        from deeplabcut.pose_estimation_tensorflow import analyze_time_lapse_frames
-
-        return analyze_time_lapse_frames(
-            config,
-            directory,
-            frametype=frametype,
-            shuffle=shuffle,
-            trainingsetindex=trainingsetindex,
-            gputouse=gputouse,
-            save_as_csv=save_as_csv,
-            modelprefix=modelprefix,
-        )
+        raise NotImplementedError(_TF_REMOVED_MSG)
     elif engine == Engine.PYTORCH:
         from deeplabcut.pose_estimation_pytorch import analyze_images
 
@@ -1545,25 +1442,7 @@ def convert_detections2tracklets(
         )
 
     if engine == Engine.TF:
-        from deeplabcut.pose_estimation_tensorflow import convert_detections2tracklets
-
-        return convert_detections2tracklets(
-            config,
-            videos,
-            video_extensions=video_extensions,
-            shuffle=shuffle,
-            trainingsetindex=trainingsetindex,
-            overwrite=overwrite,
-            destfolder=destfolder,
-            ignore_bodyparts=ignore_bodyparts,
-            inferencecfg=inferencecfg,
-            modelprefix=modelprefix,
-            greedy=greedy,
-            calibrate=calibrate,
-            window_size=window_size,
-            identity_only=identity_only,
-            track_method=track_method,
-        )
+        raise NotImplementedError(_TF_REMOVED_MSG)
 
     elif engine == Engine.PYTORCH:
         from deeplabcut.pose_estimation_pytorch.apis import convert_detections2tracklets
@@ -1659,17 +1538,7 @@ def extract_maps(
         )
 
     if engine == Engine.TF:
-        from deeplabcut.pose_estimation_tensorflow import extract_maps
-
-        return extract_maps(
-            config,
-            shuffle=shuffle,
-            trainingsetindex=trainingsetindex,
-            gputouse=gputouse,
-            rescale=rescale,
-            Indices=Indices,
-            modelprefix=modelprefix,
-        )
+        raise NotImplementedError(_TF_REMOVED_MSG)
     elif engine == Engine.PYTORCH:
         from deeplabcut.pose_estimation_pytorch import extract_maps
 
@@ -1832,21 +1701,7 @@ def extract_save_all_maps(
         )
 
     if engine == Engine.TF:
-        from deeplabcut.pose_estimation_tensorflow import extract_save_all_maps
-
-        return extract_save_all_maps(
-            config,
-            shuffle=shuffle,
-            trainingsetindex=trainingsetindex,
-            comparisonbodyparts=comparison_bodyparts,
-            extract_paf=extract_paf,
-            all_paf_in_one=all_paf_in_one,
-            gputouse=gputouse,
-            rescale=rescale,
-            Indices=Indices,
-            modelprefix=modelprefix,
-            dest_folder=dest_folder,
-        )
+        raise NotImplementedError(_TF_REMOVED_MSG)
     elif engine == Engine.PYTORCH:
         from deeplabcut.pose_estimation_pytorch import extract_save_all_maps
 
@@ -1946,20 +1801,7 @@ def export_model(
         )
 
     if engine == Engine.TF:
-        from deeplabcut.pose_estimation_tensorflow import export_model
-
-        return export_model(
-            cfg_path=cfg_path,
-            shuffle=shuffle,
-            trainingsetindex=trainingsetindex,
-            snapshotindex=snapshotindex,
-            iteration=iteration,
-            TFGPUinference=TFGPUinference,
-            overwrite=overwrite,
-            make_tar=make_tar,
-            wipepaths=wipepaths,
-            modelprefix=modelprefix,
-        )
+        raise NotImplementedError(_TF_REMOVED_MSG)
     elif engine == Engine.PYTORCH:
         from deeplabcut.pose_estimation_pytorch.apis.export import export_model
 

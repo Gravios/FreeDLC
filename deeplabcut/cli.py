@@ -15,6 +15,16 @@ import click
 
 CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 
+# These legacy click commands wrapped the (now removed) TensorFlow engine directly.
+# They are kept so `--help` still lists them, but raise a clear error; use the
+# engine-aware Python API (deeplabcut.train_network / evaluate_network /
+# analyze_videos) with a PyTorch project instead.
+_TF_REMOVED_MSG = (
+    "The TensorFlow engine has been removed from this build. This legacy CLI command "
+    "wrapped it directly. Use the Python API (deeplabcut.train_network, "
+    "deeplabcut.evaluate_network, deeplabcut.analyze_videos) with a PyTorch project."
+)
+
 
 @click.group(invoke_without_command=True)
 # @click.version_option()
@@ -256,9 +266,7 @@ def train_network(_, *args, **kwargs):
     python3 dlc.py step7_train  /home/project/reaching/config.yaml
 
     """
-    from deeplabcut.pose_estimation_tensorflow import training
-
-    training.train_network(*args, **kwargs)
+    raise NotImplementedError(_TF_REMOVED_MSG)
 
 
 ##########################################################################
@@ -283,9 +291,7 @@ def evaluate_network(_, config, **kwargs):
     python3 dlc.py evaluate_network  /home/project/reaching/config.yaml
 
     """
-    from deeplabcut.pose_estimation_tensorflow.core.evaluate import evaluate_network as _evaluate_network
-
-    _evaluate_network(config, **kwargs)
+    raise NotImplementedError(_TF_REMOVED_MSG)
 
 
 ##########################################################################
@@ -327,9 +333,7 @@ def analyze_videos(_, *args, **kwargs):
     python3 dlc.py analyze_videos /home/project/reaching/config.yaml /home/project/reaching/newVideo/1.avi
 
     """
-    from deeplabcut.pose_estimation_tensorflow import predict_videos
-
-    predict_videos.analyze_videos(*args, **kwargs)
+    raise NotImplementedError(_TF_REMOVED_MSG)
 
     # for video in videos:
     #     predict.predict_video(config, video,**kwargs)
