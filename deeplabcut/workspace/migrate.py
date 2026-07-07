@@ -247,6 +247,7 @@ def migrate_project(
     link: str = "symlink",
     include_videos: bool = True,
     include_models: bool = True,
+    include_annotations: bool = True,
     exist_ok: bool = False,
 ) -> Project:
     """Migrate a legacy project at ``legacy_root`` into a workspace at ``dest_root``.
@@ -285,5 +286,12 @@ def migrate_project(
             model_id = ids.new_model_id()
             _bundle_from_legacy(model, project.layout.model_dir(model_id), model_id)
             log.info("migrated model -> models/%s (shuffle=%s)", model_id, model.shuffle)
+
+    if include_annotations:
+        from .annotations import ingest_annotations
+
+        summary = ingest_annotations(project, legacy_root, link=link)
+        for video_id, n in summary.items():
+            log.info("migrated %d annotated frames -> sources/annotations/%s", n, video_id)
 
     return project

@@ -24,6 +24,12 @@ Typical use::
 from __future__ import annotations
 
 from . import ids
+from .annotations import (
+    collected_data_to_long_df,
+    ingest_annotations,
+    ingest_video_annotations,
+    read_collected_data,
+)
 from .apply import (
     SINGLE_INDIVIDUAL,
     apply_to_video,
@@ -68,6 +74,10 @@ __all__ = [
     "discover_legacy_models",
     "legacy_config_to_project_config",
     "legacy_video_paths",
+    "read_collected_data",
+    "collected_data_to_long_df",
+    "ingest_annotations",
+    "ingest_video_annotations",
     "read_legacy_config",
     "LegacyModel",
     "RUN_KINDS",
