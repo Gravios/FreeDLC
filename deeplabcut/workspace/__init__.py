@@ -36,7 +36,9 @@ from .apply import (
     predictions_to_long_df,
     write_pose_parquet,
 )
+from .evaluate import evaluate_model, infer_on_frames, read_labels
 from .layout import Layout
+from .metrics import pose_error
 from .migrate import (
     LegacyModel,
     discover_legacy_models,
@@ -55,6 +57,7 @@ from .schema import (
     RunManifest,
     VideoRecord,
 )
+from .train import DlcPytorchBackend, TrainBackend, TrainConfig, train_model
 
 __all__ = [
     "ids",
@@ -80,6 +83,14 @@ __all__ = [
     "ingest_video_annotations",
     "read_legacy_config",
     "LegacyModel",
+    "TrainConfig",
+    "TrainBackend",
+    "train_model",
+    "DlcPytorchBackend",
+    "evaluate_model",
+    "read_labels",
+    "infer_on_frames",
+    "pose_error",
     "RUN_KINDS",
     "SCHEMA_VERSION",
 ]

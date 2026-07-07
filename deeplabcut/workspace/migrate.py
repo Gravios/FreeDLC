@@ -20,12 +20,11 @@ from __future__ import annotations
 
 import logging
 import re
-import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import ids
+from . import _snapshots, ids
 from .model_bundle import ModelBundle
 from .project import Project
 from .schema import ProjectConfig
@@ -42,14 +41,10 @@ __all__ = [
 log = logging.getLogger(__name__)
 
 LEGACY_MODELS_DIR = "dlc-models-pytorch"
-POSE_PREFIX = "snapshot"
-DETECTOR_PREFIX = "snapshot-detector"
 
 # Parses "<Task><date>-trainset95shuffle1" -> (95, 1).
 _TRAINSET_SHUFFLE_RE = re.compile(r"trainset(\d+)shuffle(\d+)$")
 _ITERATION_RE = re.compile(r"iteration-(\d+)")
-# Parses "snapshot-050" / "snapshot-best-050" / "snapshot-detector-best-020" -> (best?, epoch).
-_SNAPSHOT_UID_RE = re.compile(r"-(?:(best)-)?(\d+)$")
 
 
 # ---------------------------------------------------------------- config reading
@@ -132,52 +127,6 @@ class LegacyModel:
         return bool(self.detector_snapshots)
 
 
-def _snapshot_epoch(path: Path) -> int:
-    m = _SNAPSHOT_UID_RE.search(path.stem)
-    return int(m.group(2)) if m else -1
-
-
-def _is_best(path: Path) -> bool:
-    m = _SNAPSHOT_UID_RE.search(path.stem)
-    return bool(m and m.group(1))
-
-
-def _list_snapshots(train_dir: Path, *, detector: bool) -> list[Path]:
-    files = []
-    for p in train_dir.glob("snapshot-*.pt"):
-        is_detector = p.name.startswith(DETECTOR_PREFIX + "-")
-        if is_detector == detector:
-            files.append(p)
-    return sorted(files, key=_snapshot_epoch)
-
-
-def _pick_default(snapshots: list[Path]) -> Path:
-    """The default snapshot: the best-performing one if any, else the highest epoch."""
-    bests = [s for s in snapshots if _is_best(s)]
-    return (bests or snapshots)[-1]
-
-
-def _read_net_type(pose_config: Path) -> str | None:
-    import yaml
-
-    with pose_config.open() as fh:
-        cfg = yaml.safe_load(fh) or {}
-    for key in ("net_type", "default_net_type"):
-        if cfg.get(key):
-            return str(cfg[key])
-    backbone = (cfg.get("model") or {}).get("backbone") or {}
-    return backbone.get("type")
-
-
-def _read_bodyparts(pose_config: Path) -> list[str]:
-    import yaml
-
-    with pose_config.open() as fh:
-        cfg = yaml.safe_load(fh) or {}
-    meta = cfg.get("metadata") or {}
-    return list(meta.get("bodyparts") or [])
-
-
 def discover_legacy_models(legacy_root: str | Path) -> list[LegacyModel]:
     """Find every trained PyTorch model under ``<legacy_root>/dlc-models-pytorch``."""
     root = Path(legacy_root) / LEGACY_MODELS_DIR
@@ -188,7 +137,7 @@ def discover_legacy_models(legacy_root: str | Path) -> list[LegacyModel]:
         pose_config = train_dir / "pytorch_config.yaml"
         if not pose_config.is_file():
             continue
-        pose = _list_snapshots(train_dir, detector=False)
+        pose = _snapshots.list_snapshots(train_dir, detector=False)
         if not pose:
             log.warning("skipping %s: no pose snapshots found", train_dir)
             continue
@@ -199,11 +148,11 @@ def discover_legacy_models(legacy_root: str | Path) -> list[LegacyModel]:
                 train_dir=train_dir,
                 pose_config=pose_config,
                 pose_snapshots=pose,
-                detector_snapshots=_list_snapshots(train_dir, detector=True),
+                detector_snapshots=_snapshots.list_snapshots(train_dir, detector=True),
                 iteration=int(it_m.group(1)) if it_m else None,
                 shuffle=int(ts_m.group(2)) if ts_m else None,
                 train_fraction=int(ts_m.group(1)) / 100 if ts_m else None,
-                net_type=_read_net_type(pose_config),
+                net_type=_snapshots.read_net_type(pose_config),
             )
         )
     return models
@@ -211,16 +160,9 @@ def discover_legacy_models(legacy_root: str | Path) -> list[LegacyModel]:
 
 # --------------------------------------------------------------- bundle assembly
 def _bundle_from_legacy(model: LegacyModel, dest: Path, model_id: str) -> ModelBundle:
-    default_pose = _pick_default(model.pose_snapshots)
-    default_det = _pick_default(model.detector_snapshots) if model.detector_snapshots else None
-    bundle = ModelBundle.create(
+    return ModelBundle.from_train_dir(
         dest,
-        pose_config_src=model.pose_config,
-        snapshot_src=default_pose,
-        architecture=model.net_type or "unknown",
-        bodyparts=_read_bodyparts(model.pose_config),
-        top_down=model.top_down,
-        detector_snapshot_src=default_det,
+        model.train_dir,
         model_id=model_id,
         legacy={
             "iteration": model.iteration,
@@ -229,14 +171,6 @@ def _bundle_from_legacy(model: LegacyModel, dest: Path, model_id: str) -> ModelB
             "train_dir": str(model.train_dir),
         },
     )
-    # preserve every other snapshot (nothing is lost in migration)
-    for src in model.pose_snapshots:
-        if src != default_pose:
-            shutil.copy2(src, bundle.snapshots_dir / f"pose-{src.name}")
-    for src in model.detector_snapshots:
-        if src != default_det:
-            shutil.copy2(src, bundle.snapshots_dir / f"detector-{src.name}")
-    return bundle
 
 
 # --------------------------------------------------------------------- top-level

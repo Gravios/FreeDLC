@@ -17,7 +17,7 @@ from pathlib import Path
 import yaml
 
 from deeplabcut import workspace as ws
-from deeplabcut.workspace import migrate
+from deeplabcut.workspace import _snapshots, migrate
 
 
 def _write_yaml(path: Path, data: dict) -> None:
@@ -97,15 +97,15 @@ def test_discover_models_and_snapshot_ordering():
         assert m1.train_fraction == 0.95 and m1.iteration == 0 and m1.net_type == "resnet_50"
         assert not m1.top_down and len(m1.pose_snapshots) == 2
         # best is preferred as default even though 100 > 50 here it's also highest
-        assert migrate._pick_default(m1.pose_snapshots).name == "snapshot-best-100.pt"
+        assert _snapshots.pick_default_snapshot(m1.pose_snapshots).name == "snapshot-best-100.pt"
         m3 = by_shuffle[3]
         assert m3.top_down and len(m3.detector_snapshots) == 2
-        assert migrate._pick_default(m3.detector_snapshots).name == "snapshot-detector-best-020.pt"
+        assert _snapshots.pick_default_snapshot(m3.detector_snapshots).name == "snapshot-detector-best-020.pt"
 
 
 def test_pick_default_prefers_best_over_higher_epoch():
     snaps = [Path("snapshot-best-050.pt"), Path("snapshot-200.pt")]
-    assert migrate._pick_default(snaps).name == "snapshot-best-050.pt"
+    assert _snapshots.pick_default_snapshot(snaps).name == "snapshot-best-050.pt"
 
 
 # ----------------------------------------------------------------- video paths

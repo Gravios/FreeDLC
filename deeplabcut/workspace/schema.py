@@ -176,6 +176,7 @@ class RunManifest:
     inputs: list[str] = field(default_factory=list)
     outputs: list[str] = field(default_factory=list)
     params: dict[str, Any] = field(default_factory=dict)
+    metrics: dict[str, Any] = field(default_factory=dict)
     code_version: str | None = None
     notes: str = ""
     schema_version: int = SCHEMA_VERSION

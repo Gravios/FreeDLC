@@ -155,6 +155,13 @@ class Project:
     def video_record(self, video_id: str) -> VideoRecord:
         return VideoRecord.from_dict(read_manifest(self.layout.video_toml(video_id)))
 
+    def annotated_videos(self) -> list[str]:
+        """Video ids that have ingested annotations (``labels.parquet``), sorted."""
+        d = self.layout.annotations_dir
+        if not d.exists():
+            return []
+        return sorted(p.name for p in d.iterdir() if (p / "labels.parquet").exists())
+
     # -- models -----------------------------------------------------------
     def models(self) -> list[str]:
         """All model ids present under ``models/``, sorted (i.e. oldest first)."""

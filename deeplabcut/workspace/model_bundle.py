@@ -113,10 +113,68 @@ class ModelBundle:
         """Open the bundle stored at ``models/<model_id>/`` inside a project."""
         return cls.open(Layout(project.root).model_dir(model_id))
 
+    @classmethod
+    def from_train_dir(
+        cls,
+        dest: str | Path,
+        train_dir: str | Path,
+        *,
+        model_id: str | None = None,
+        train_run_id: str | None = None,
+        metrics: dict | None = None,
+        legacy: dict | None = None,
+        exist_ok: bool = False,
+    ) -> ModelBundle:
+        """Harvest a PyTorch ``train`` directory into a portable bundle.
+
+        Reads ``pytorch_config.yaml`` and the ``snapshot-*.pt`` checkpoints,
+        picks the default snapshot (best, else highest epoch), copies every
+        snapshot in, and writes ``model.toml``. Shared by migration and training.
+        """
+        from . import _snapshots
+
+        train_dir = Path(train_dir)
+        pose_config = train_dir / "pytorch_config.yaml"
+        if not pose_config.is_file():
+            raise FileNotFoundError(f"no pytorch_config.yaml in {train_dir}")
+        pose = _snapshots.list_snapshots(train_dir, detector=False)
+        if not pose:
+            raise FileNotFoundError(f"no pose snapshots in {train_dir}")
+        detector = _snapshots.list_snapshots(train_dir, detector=True)
+
+        default_pose = _snapshots.pick_default_snapshot(pose)
+        default_det = _snapshots.pick_default_snapshot(detector) if detector else None
+        bundle = cls.create(
+            dest,
+            pose_config_src=pose_config,
+            snapshot_src=default_pose,
+            architecture=_snapshots.read_net_type(pose_config) or "unknown",
+            bodyparts=_snapshots.read_bodyparts(pose_config),
+            top_down=bool(detector),
+            detector_snapshot_src=default_det,
+            model_id=model_id,
+            train_run_id=train_run_id,
+            metrics=metrics,
+            legacy=legacy,
+            exist_ok=exist_ok,
+        )
+        for src in pose:
+            if src != default_pose:
+                shutil.copy2(src, bundle.snapshots_dir / f"pose-{src.name}")
+        for src in detector:
+            if src != default_det:
+                shutil.copy2(src, bundle.snapshots_dir / f"detector-{src.name}")
+        return bundle
+
     # -- paths ------------------------------------------------------------
     @property
     def pose_config_path(self) -> Path:
         return self.path / self.card.pose_config
+
+    def set_metrics(self, metrics: dict) -> None:
+        """Record evaluation metrics on the card and persist ``model.toml``."""
+        self.card.metrics = dict(metrics)
+        write_manifest(self.path / "model.toml", self.card.to_dict())
 
     @property
     def snapshots_dir(self) -> Path:
