@@ -86,6 +86,7 @@ modelzoo = [ "huggingface-hub" ]
 wandb = [ "wandb" ]
 [project.scripts]
 dlc = "deeplabcut.__main__:main"
+dlc-ws = "deeplabcut.workspace.cli:main"
 [project.urls]
 Homepage = "https://www.deeplabcut.org"
 Repository = "https://github.com/DeepLabCut/DeepLabCut"
