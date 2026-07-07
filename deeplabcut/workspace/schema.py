@@ -141,6 +141,7 @@ class ModelCard:
     train_run_id: str | None = None
     code_version: str | None = None
     metrics: dict[str, Any] = field(default_factory=dict)
+    legacy: dict[str, Any] = field(default_factory=dict)
     schema_version: int = SCHEMA_VERSION
 
     def __post_init__(self) -> None:

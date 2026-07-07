@@ -63,6 +63,7 @@ class ModelBundle:
         model_id: str | None = None,
         train_run_id: str | None = None,
         metrics: dict | None = None,
+        legacy: dict | None = None,
         exist_ok: bool = False,
     ) -> ModelBundle:
         """Assemble a portable bundle at ``dest`` from a trained model's files.
@@ -102,6 +103,7 @@ class ModelBundle:
             train_run_id=train_run_id,
             code_version=code_version(),
             metrics=dict(metrics or {}),
+            legacy=dict(legacy or {}),
         )
         write_manifest(dest / "model.toml", card.to_dict())
         return cls(dest, card)

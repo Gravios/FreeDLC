@@ -31,6 +31,14 @@ from .apply import (
     write_pose_parquet,
 )
 from .layout import Layout
+from .migrate import (
+    LegacyModel,
+    discover_legacy_models,
+    legacy_config_to_project_config,
+    legacy_video_paths,
+    migrate_project,
+    read_legacy_config,
+)
 from .model_bundle import ModelBundle
 from .project import Project, Run
 from .schema import (
@@ -56,6 +64,12 @@ __all__ = [
     "apply_to_video",
     "predictions_to_long_df",
     "write_pose_parquet",
+    "migrate_project",
+    "discover_legacy_models",
+    "legacy_config_to_project_config",
+    "legacy_video_paths",
+    "read_legacy_config",
+    "LegacyModel",
     "RUN_KINDS",
     "SCHEMA_VERSION",
 ]
