@@ -1,0 +1,61 @@
+#
+# FreeDLC workspace layer
+#
+"""FreeDLC workspace: a project/IO layer built on a clean, explicit layout.
+
+The layout separates immutable inputs (``sources/``) from generated artifacts
+(``runs/``, ``derived/``) and from portable model bundles (``models/``). Entity
+identity lives in TOML manifests, not in directory or file names, and every
+generating operation records reproducible provenance in a ``run.toml``.
+
+Typical use::
+
+    from deeplabcut import workspace as ws
+
+    proj = ws.Project.create("/data/reaching", task="reaching", bodyparts=["snout", "paw"])
+    vid = proj.add_video("/raw/session01.mp4")
+
+    # A trained model is a portable bundle -- no project required to run it:
+    bundle = ws.ModelBundle.open("/models/20260707-141530-a1b9c2")
+    run = proj.new_run("analyze", model_id=bundle.card.model_id, inputs=[vid])
+    ws.apply_to_video(bundle, proj.layout.video_media(vid), run.video_dir(vid))
+    run.finish(outputs=["pose.parquet"])
+"""
+from __future__ import annotations
+
+from . import ids
+from .apply import (
+    SINGLE_INDIVIDUAL,
+    apply_to_video,
+    predictions_to_long_df,
+    write_pose_parquet,
+)
+from .layout import Layout
+from .model_bundle import ModelBundle
+from .project import Project, Run
+from .schema import (
+    RUN_KINDS,
+    SCHEMA_VERSION,
+    ModelCard,
+    ProjectConfig,
+    RunManifest,
+    VideoRecord,
+)
+
+__all__ = [
+    "ids",
+    "Layout",
+    "Project",
+    "Run",
+    "ModelBundle",
+    "ProjectConfig",
+    "VideoRecord",
+    "ModelCard",
+    "RunManifest",
+    "SINGLE_INDIVIDUAL",
+    "apply_to_video",
+    "predictions_to_long_df",
+    "write_pose_parquet",
+    "RUN_KINDS",
+    "SCHEMA_VERSION",
+]
