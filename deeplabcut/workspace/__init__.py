@@ -36,6 +36,12 @@ from .apply import (
     predictions_to_long_df,
     write_pose_parquet,
 )
+from .coco_export import (
+    export_coco_dataset,
+    labels_to_coco,
+    split_coco,
+    workspace_to_dlc_project_dict,
+)
 from .evaluate import evaluate_model, infer_on_frames, read_labels
 from .layout import Layout
 from .metrics import pose_error
@@ -57,7 +63,7 @@ from .schema import (
     RunManifest,
     VideoRecord,
 )
-from .train import DlcPytorchBackend, TrainBackend, TrainConfig, train_model
+from .train import TrainBackend, TrainConfig, WorkspaceTrainBackend, train_model
 
 __all__ = [
     "ids",
@@ -86,7 +92,11 @@ __all__ = [
     "TrainConfig",
     "TrainBackend",
     "train_model",
-    "DlcPytorchBackend",
+    "WorkspaceTrainBackend",
+    "export_coco_dataset",
+    "labels_to_coco",
+    "split_coco",
+    "workspace_to_dlc_project_dict",
     "evaluate_model",
     "read_labels",
     "infer_on_frames",

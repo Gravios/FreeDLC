@@ -11,9 +11,10 @@ to the run. The backend seam keeps the (torch-heavy, environment-specific)
 compute out of the orchestration, so the orchestration is small and testable and
 the trainer can be swapped without touching it.
 
-``DlcPytorchBackend`` is the provided backend that drives DeepLabCut's PyTorch
-trainer. It requires a torch environment and is imported lazily; it is the one
-piece here that is not exercised without a GPU.
+``WorkspaceTrainBackend`` is the provided backend: it trains natively from the
+workspace's own annotations, with no legacy ``config.yaml`` or ``dlc-models``
+layout. It requires torch and defers that work to
+:mod:`~deeplabcut.workspace.native_train`.
 """
 from __future__ import annotations
 
@@ -25,7 +26,7 @@ from typing import Any, Protocol
 from . import ids
 from .model_bundle import ModelBundle
 
-__all__ = ["TrainConfig", "TrainBackend", "train_model", "DlcPytorchBackend"]
+__all__ = ["TrainConfig", "TrainBackend", "train_model", "WorkspaceTrainBackend"]
 
 
 @dataclass
@@ -92,45 +93,16 @@ def train_model(project, config: TrainConfig, backend: TrainBackend, *,
     return bundle
 
 
-class DlcPytorchBackend:
-    """Backend that drives DeepLabCut's PyTorch trainer (requires torch).
+class WorkspaceTrainBackend:
+    """Native training backend.
 
-    DeepLabCut's trainer writes into a legacy project's ``dlc-models-pytorch/``
-    tree, so this backend is constructed against a legacy ``config.yaml`` and a
-    shuffle; it runs the training and returns that shuffle's ``train`` directory
-    for :func:`train_model` to harvest into the workspace. Imports of the trainer
-    are deferred to call time.
+    Trains straight from the workspace's annotations (``sources/annotations/``)
+    into ``runs/train/<id>/train/`` -- no legacy ``config.yaml`` and no
+    ``dlc-models-pytorch/`` layout. Requires torch; the compute is deferred to
+    :func:`deeplabcut.workspace.native_train.train_in_workspace`.
     """
 
-    def __init__(self, legacy_config: str | Path, *, shuffle: int = 1,
-                 trainingsetindex: int = 0, modelprefix: str = ""):
-        self.legacy_config = str(legacy_config)
-        self.shuffle = shuffle
-        self.trainingsetindex = trainingsetindex
-        self.modelprefix = modelprefix
-
     def __call__(self, project, run, config: TrainConfig) -> Path:
-        from deeplabcut.compat import train_network
-        from deeplabcut.core.engine import Engine
-        from deeplabcut.utils.auxiliaryfunctions import get_model_folder, read_config
+        from .native_train import train_in_workspace
 
-        train_network(
-            self.legacy_config,
-            shuffle=self.shuffle,
-            trainingsetindex=self.trainingsetindex,
-            epochs=config.epochs,
-            save_epochs=config.save_epochs,
-            batch_size=config.batch_size,
-            detector_epochs=config.detector_epochs,
-            detector_batch_size=config.detector_batch_size,
-            device=config.device,
-            modelprefix=self.modelprefix,
-            engine=Engine.PYTORCH,
-            **config.extra,
-        )
-        cfg = read_config(self.legacy_config)
-        model_folder = get_model_folder(
-            config.train_fraction, self.shuffle, cfg,
-            modelprefix=self.modelprefix, engine=Engine.PYTORCH,
-        )
-        return Path(cfg["project_path"]) / model_folder / "train"
+        return train_in_workspace(project, run, config)

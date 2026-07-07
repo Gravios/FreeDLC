@@ -22,7 +22,7 @@ from .evaluate import evaluate_model
 from .migrate import migrate_project
 from .model_bundle import ModelBundle
 from .project import Project
-from .train import DlcPytorchBackend, TrainConfig, train_model
+from .train import TrainConfig, WorkspaceTrainBackend, train_model
 
 __all__ = ["main", "build_parser"]
 
@@ -98,9 +98,9 @@ def cmd_apply(args) -> int:
 def cmd_train(args) -> int:
     project = Project.open(args.project)
     config = TrainConfig(net_type=args.net, epochs=args.epochs, batch_size=args.batch_size,
-                         detector_epochs=args.detector_epochs, device=args.device)
-    backend = DlcPytorchBackend(args.legacy_config, shuffle=args.shuffle)
-    bundle = train_model(project, config, backend)
+                         detector_epochs=args.detector_epochs, device=args.device,
+                         train_fraction=args.train_fraction, seed=args.seed)
+    bundle = train_model(project, config, WorkspaceTrainBackend())
     print(f"trained -> models/{bundle.card.model_id}")
     return 0
 
@@ -147,15 +147,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--batch-size", type=int, default=1, dest="batch_size")
     p.set_defaults(func=cmd_apply)
 
-    p = sub.add_parser("train", help="train a model (requires torch)")
+    p = sub.add_parser("train", help="train a model natively from annotations (requires torch)")
     p.add_argument("project")
-    p.add_argument("--legacy-config", required=True, dest="legacy_config",
-                   help="legacy config.yaml driving the DeepLabCut PyTorch trainer")
     p.add_argument("--net", default="resnet_50")
     p.add_argument("--epochs", type=int, default=200)
     p.add_argument("--batch-size", type=int, default=8, dest="batch_size")
     p.add_argument("--detector-epochs", type=int, default=0, dest="detector_epochs")
-    p.add_argument("--shuffle", type=int, default=1)
+    p.add_argument("--train-fraction", type=float, default=0.95, dest="train_fraction")
+    p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device")
     p.set_defaults(func=cmd_train)
 

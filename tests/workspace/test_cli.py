@@ -133,10 +133,9 @@ def test_train_dispatch(monkeypatch):
             return _FakeBundle()
 
         monkeypatch.setattr(cli, "train_model", fake_train)
-        code, out = _run(["train", str(proj.root), "--legacy-config", "cfg.yaml",
-                          "--net", "hrnet_w32", "--epochs", "3"])
+        code, out = _run(["train", str(proj.root), "--net", "hrnet_w32", "--epochs", "3"])
         assert code == 0 and "trained -> models/trained1" in out
-        assert seen == {"net": "hrnet_w32", "epochs": 3, "backend": "DlcPytorchBackend"}
+        assert seen == {"net": "hrnet_w32", "epochs": 3, "backend": "WorkspaceTrainBackend"}
 
 
 def test_evaluate_dispatch(monkeypatch):
