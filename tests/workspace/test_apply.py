@@ -138,6 +138,29 @@ def test_apply_to_videos_on_error_raise(monkeypatch):
             raise AssertionError("default on_error should re-raise")
 
 
+def test_beside_video_path():
+    p = apply_mod.beside_video_path("/data/vids/sess/clip-0001-20250901.mp4")
+    assert p == Path("/data/vids/sess/clip-0001-20250901.fdlc.parquet")
+
+
+def test_apply_to_videos_beside_video(monkeypatch):
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        bundle = _bundle(d)
+        _patch_inference(monkeypatch)
+        viddir = d / "source" / "sess1"
+        viddir.mkdir(parents=True)
+        v = viddir / "stroh-kj-0001-20250901.mp4"
+        v.write_bytes(b"v")
+
+        results = ws.apply_to_videos(bundle, [v], d / "ignored", beside_video=True)
+        expected = viddir / "stroh-kj-0001-20250901.fdlc.parquet"
+        assert results[str(v)] == expected           # <video-stem>.fdlc.parquet next to the video
+        assert expected.exists()
+        assert not (d / "ignored").exists()           # out_root ignored in beside mode
+        assert not (viddir / "run.toml").exists()     # source dir stays clean (no run.toml)
+
+
 # ------------------------------------------------------------------ smoke runner
 def _run_smoke() -> int:
     class _MP:

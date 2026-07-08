@@ -89,6 +89,23 @@ def cmd_apply(args) -> int:
 
     if args.model:  # project-less drop-in model
         bundle = ModelBundle.open(args.model)
+    else:
+        if not args.model_id:
+            print("--model-id is required with --project")
+            return 2
+        project = Project.open(args.project)
+        bundle = ModelBundle.from_project(project, args.model_id)
+
+    # --beside-video: write <stem>.fdlc.parquet next to each source video, no run dir
+    if args.beside_video:
+        results = apply_to_videos(bundle, videos, Path("."),
+                                  device=args.device, batch_size=args.batch_size,
+                                  beside_video=True)
+        for video, pose in results.items():
+            print(f"{video} -> {pose}")
+        return 0
+
+    if args.model:
         out_root = Path(args.out) if args.out else Path("dlc-predictions")
         results = apply_to_videos(bundle, videos, out_root,
                                   device=args.device, batch_size=args.batch_size)
@@ -96,11 +113,6 @@ def cmd_apply(args) -> int:
             print(f"{video} -> {pose}")
         return 0
 
-    if not args.model_id:
-        print("--model-id is required with --project")
-        return 2
-    project = Project.open(args.project)
-    bundle = ModelBundle.from_project(project, args.model_id)
     run = project.new_run("analyze", model_id=args.model_id, inputs=[str(v) for v in videos])
     run.start()
     out_root = Path(args.out) if args.out else run.dir
@@ -163,6 +175,8 @@ def build_parser() -> argparse.ArgumentParser:
     source.add_argument("--model", help="a model bundle directory (project-less drop-in)")
     p.add_argument("--model-id", dest="model_id", help="model id inside --project")
     p.add_argument("--out", help="output root directory")
+    p.add_argument("--beside-video", action="store_true", dest="beside_video",
+                   help="write <video-stem>.fdlc.parquet next to each source video (no run dir)")
     p.add_argument("--device")
     p.add_argument("--batch-size", type=int, default=1, dest="batch_size")
     p.set_defaults(func=cmd_apply)

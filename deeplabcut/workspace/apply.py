@@ -133,6 +133,16 @@ def write_pose_parquet(df, path: str | Path) -> Path:
     return path
 
 
+#: Suffix for pose files written next to their source video (``--beside-video``).
+FDLC_SUFFIX = ".fdlc.parquet"
+
+
+def beside_video_path(video: str | Path) -> Path:
+    """Pose output path next to the source video: ``<dir>/<stem>.fdlc.parquet``."""
+    video = Path(video)
+    return video.parent / f"{video.stem}{FDLC_SUFFIX}"
+
+
 def collect_videos(paths: Sequence[str | Path], *, extensions=VIDEO_EXTENSIONS) -> list[Path]:
     """Expand file / directory / glob paths into a sorted, de-duplicated video list.
 
@@ -227,13 +237,16 @@ def apply_to_video(
     max_individuals: int | None = None,
     cropping: list[int] | None = None,
     write: bool = True,
+    beside_video: bool = False,
     runners=None,
 ):
     """Run a :class:`ModelBundle` on one video, writing ``pose.parquet`` + ``run.toml``.
 
     Needs no project. Requires torch at call time (via the runner + video
     inference). Returns the path to the written ``pose.parquet`` (or the
-    in-memory DataFrame when ``write=False``). Pass ``runners`` (from
+    in-memory DataFrame when ``write=False``). With ``beside_video=True`` the
+    pose is written as ``<video-stem>.fdlc.parquet`` next to the source video and
+    no run directory or ``run.toml`` is created. Pass ``runners`` (from
     :func:`apply_to_videos`) to reuse a runner already built for this bundle.
     """
     started = now_iso()
@@ -246,6 +259,8 @@ def apply_to_video(
     df = _infer_to_df(bundle, video, pose_runner, detector_runner, cropping=cropping)
     if not write:
         return df
+    if beside_video:
+        return write_pose_parquet(df, beside_video_path(video))
     return _write_video_outputs(
         df, video, out_dir, bundle,
         snapshot=snapshot, batch_size=batch_size, device=device, cropping=cropping, started=started,
@@ -263,14 +278,17 @@ def apply_to_videos(
     detector_snapshot: str = "default",
     max_individuals: int | None = None,
     cropping: list[int] | None = None,
+    beside_video: bool = False,
     on_error: str = "raise",
 ) -> dict[str, Path | None]:
     """Label several videos with one bundle, building the runner **once**.
 
     Each video's outputs are written to ``out_root/<video-stem>/pose.parquet``
-    (plus ``run.toml``). Returns ``{video_path: pose_parquet_path}``; on a
-    per-video failure, ``on_error="skip"`` records ``None`` and continues,
-    while ``on_error="raise"`` (default) re-raises.
+    (plus ``run.toml``). With ``beside_video=True`` each pose is instead written
+    as ``<video-stem>.fdlc.parquet`` next to its source video and ``out_root`` is
+    ignored. Returns ``{video_path: pose_parquet_path}``; on a per-video failure,
+    ``on_error="skip"`` records ``None`` and continues, while ``on_error="raise"``
+    (default) re-raises.
     """
     out_root = Path(out_root)
     runners = _build_runners(
@@ -280,12 +298,13 @@ def apply_to_videos(
     results: dict[str, Path | None] = {}
     for video in videos:
         video = Path(video)
-        out_dir = out_root / ids.slugify(video.stem)
+        out_dir = None if beside_video else out_root / ids.slugify(video.stem)
         try:
             results[str(video)] = apply_to_video(
                 bundle, video, out_dir,
                 snapshot=snapshot, detector_snapshot=detector_snapshot,
-                device=device, batch_size=batch_size, cropping=cropping, runners=runners,
+                device=device, batch_size=batch_size, cropping=cropping,
+                beside_video=beside_video, runners=runners,
             )
         except Exception:
             if on_error != "skip":
