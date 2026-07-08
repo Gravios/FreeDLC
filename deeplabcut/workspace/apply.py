@@ -19,20 +19,32 @@ lazily; the pure array->DataFrame conversion is dependency-light and unit-tested
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from . import ids
 from .manifest import write_manifest
 from .schema import RunManifest, now_iso
 from .util import code_version
 
+log = logging.getLogger(__name__)
+
 __all__ = [
     "SINGLE_INDIVIDUAL",
+    "VIDEO_EXTENSIONS",
     "predictions_to_long_df",
     "write_pose_parquet",
+    "collect_videos",
     "apply_to_video",
+    "apply_to_videos",
 ]
+
+#: Video file extensions recognized when expanding directories / globs.
+VIDEO_EXTENSIONS = frozenset(
+    {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v", ".mpg", ".mpeg", ".wmv", ".flv"}
+)
 
 #: Label used for unique (non-identity) bodyparts in the ``individual`` column.
 SINGLE_INDIVIDUAL = "single"
@@ -121,30 +133,42 @@ def write_pose_parquet(df, path: str | Path) -> Path:
     return path
 
 
-def apply_to_video(
-    bundle,
-    video: str | Path,
-    out_dir: str | Path,
-    *,
-    device: str | None = None,
-    batch_size: int = 1,
-    snapshot: str = "default",
-    detector_snapshot: str = "default",
-    max_individuals: int | None = None,
-    cropping: list[int] | None = None,
-    write: bool = True,
-):
-    """Run a :class:`ModelBundle` on one video, writing ``pose.parquet`` + ``run.toml``.
+def collect_videos(paths: Sequence[str | Path], *, extensions=VIDEO_EXTENSIONS) -> list[Path]:
+    """Expand file / directory / glob paths into a sorted, de-duplicated video list.
 
-    Needs no project. Requires torch at call time (via the runner + video
-    inference). Returns the path to the written ``pose.parquet`` (or the
-    in-memory DataFrame when ``write=False``).
+    - a directory yields the video files directly inside it (by extension),
+    - a glob pattern (containing ``*``, ``?`` or ``[``) is expanded,
+    - any other path is taken as-is (so an explicit file is never filtered out).
     """
-    from deeplabcut.pose_estimation_pytorch import video_inference
+    from glob import glob
 
-    out_dir = Path(out_dir)
-    started = now_iso()
+    collected: list[Path] = []
+    for raw in paths:
+        p = Path(raw)
+        if p.is_dir():
+            collected += [
+                f for f in sorted(p.iterdir())
+                if f.is_file() and f.suffix.lower() in extensions
+            ]
+        elif any(ch in str(raw) for ch in "*?["):
+            collected += [
+                Path(g) for g in sorted(glob(str(raw))) if Path(g).suffix.lower() in extensions
+            ]
+        else:
+            collected.append(p)
 
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for f in collected:
+        key = f.resolve()
+        if key not in seen:
+            seen.add(key)
+            unique.append(f)
+    return unique
+
+
+def _build_runners(bundle, *, snapshot, detector_snapshot, device, batch_size, max_individuals):
+    """Build the pose runner (and detector runner for top-down models) once."""
     pose_runner = bundle.build_pose_runner(
         snapshot=snapshot, device=device, batch_size=batch_size, max_individuals=max_individuals
     )
@@ -153,24 +177,25 @@ def apply_to_video(
         detector_runner = bundle.build_detector_runner(
             snapshot=detector_snapshot, device=device, batch_size=batch_size
         )
+    return pose_runner, detector_runner
+
+
+def _infer_to_df(bundle, video, pose_runner, detector_runner, *, cropping):
+    """Run inference on one video with pre-built runners; return a tidy long DataFrame."""
+    from deeplabcut.pose_estimation_pytorch import video_inference
 
     predictions = video_inference(
-        video=str(video),
-        pose_runner=pose_runner,
-        detector_runner=detector_runner,
-        cropping=cropping,
+        video=str(video), pose_runner=pose_runner, detector_runner=detector_runner, cropping=cropping
     )
-
     meta = bundle._read_pose_config().get("metadata", {})
-    df = predictions_to_long_df(
-        predictions,
-        bodyparts=bundle.card.bodyparts,
+    return predictions_to_long_df(
+        predictions, bodyparts=bundle.card.bodyparts,
         unique_bodyparts=meta.get("unique_bodyparts") or None,
     )
 
-    if not write:
-        return df
 
+def _write_video_outputs(df, video, out_dir, bundle, *, snapshot, batch_size, device, cropping, started):
+    out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     pose_path = write_pose_parquet(df, out_dir / "pose.parquet")
     run = RunManifest(
@@ -188,3 +213,83 @@ def apply_to_video(
     )
     write_manifest(out_dir / "run.toml", run.to_dict())
     return pose_path
+
+
+def apply_to_video(
+    bundle,
+    video: str | Path,
+    out_dir: str | Path,
+    *,
+    device: str | None = None,
+    batch_size: int = 1,
+    snapshot: str = "default",
+    detector_snapshot: str = "default",
+    max_individuals: int | None = None,
+    cropping: list[int] | None = None,
+    write: bool = True,
+    runners=None,
+):
+    """Run a :class:`ModelBundle` on one video, writing ``pose.parquet`` + ``run.toml``.
+
+    Needs no project. Requires torch at call time (via the runner + video
+    inference). Returns the path to the written ``pose.parquet`` (or the
+    in-memory DataFrame when ``write=False``). Pass ``runners`` (from
+    :func:`apply_to_videos`) to reuse a runner already built for this bundle.
+    """
+    started = now_iso()
+    if runners is None:
+        runners = _build_runners(
+            bundle, snapshot=snapshot, detector_snapshot=detector_snapshot,
+            device=device, batch_size=batch_size, max_individuals=max_individuals,
+        )
+    pose_runner, detector_runner = runners
+    df = _infer_to_df(bundle, video, pose_runner, detector_runner, cropping=cropping)
+    if not write:
+        return df
+    return _write_video_outputs(
+        df, video, out_dir, bundle,
+        snapshot=snapshot, batch_size=batch_size, device=device, cropping=cropping, started=started,
+    )
+
+
+def apply_to_videos(
+    bundle,
+    videos: Sequence[str | Path],
+    out_root: str | Path,
+    *,
+    device: str | None = None,
+    batch_size: int = 1,
+    snapshot: str = "default",
+    detector_snapshot: str = "default",
+    max_individuals: int | None = None,
+    cropping: list[int] | None = None,
+    on_error: str = "raise",
+) -> dict[str, Path | None]:
+    """Label several videos with one bundle, building the runner **once**.
+
+    Each video's outputs are written to ``out_root/<video-stem>/pose.parquet``
+    (plus ``run.toml``). Returns ``{video_path: pose_parquet_path}``; on a
+    per-video failure, ``on_error="skip"`` records ``None`` and continues,
+    while ``on_error="raise"`` (default) re-raises.
+    """
+    out_root = Path(out_root)
+    runners = _build_runners(
+        bundle, snapshot=snapshot, detector_snapshot=detector_snapshot,
+        device=device, batch_size=batch_size, max_individuals=max_individuals,
+    )
+    results: dict[str, Path | None] = {}
+    for video in videos:
+        video = Path(video)
+        out_dir = out_root / ids.slugify(video.stem)
+        try:
+            results[str(video)] = apply_to_video(
+                bundle, video, out_dir,
+                snapshot=snapshot, detector_snapshot=detector_snapshot,
+                device=device, batch_size=batch_size, cropping=cropping, runners=runners,
+            )
+        except Exception:
+            if on_error != "skip":
+                raise
+            log.exception("failed to analyze %s", video)
+            results[str(video)] = None
+    return results

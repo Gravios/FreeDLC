@@ -33,6 +33,8 @@ from .annotations import (
 from .apply import (
     SINGLE_INDIVIDUAL,
     apply_to_video,
+    apply_to_videos,
+    collect_videos,
     predictions_to_long_df,
     write_pose_parquet,
 )
@@ -77,6 +79,8 @@ __all__ = [
     "RunManifest",
     "SINGLE_INDIVIDUAL",
     "apply_to_video",
+    "apply_to_videos",
+    "collect_videos",
     "predictions_to_long_df",
     "write_pose_parquet",
     "migrate_project",

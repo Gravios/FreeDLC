@@ -98,23 +98,45 @@ def test_no_command_prints_help():
 
 
 # -------------------------------------------------- torch commands (dispatch)
-def test_apply_dispatch(monkeypatch):
+def test_apply_dispatch_project(monkeypatch):
     with tempfile.TemporaryDirectory() as d:
         proj = _model_project(Path(d))
-        called = {}
+        seen = {}
 
-        def fake_apply(bundle, video, out, **kw):
-            called["out"] = Path(out)
-            return Path(out) / "pose.parquet"
+        def fake_apply_videos(bundle, videos, out_root, **kw):
+            seen["videos"] = [Path(v) for v in videos]
+            seen["batch_size"] = kw.get("batch_size")
+            return {str(v): Path(out_root) / "pose.parquet" for v in videos}
 
-        monkeypatch.setattr(cli, "apply_to_video", fake_apply)
-        video = Path(d) / "clip1.mp4"
-        video.write_bytes(b"v")
-        code, out = _run(["apply", str(proj.root), "m1", str(video), "--batch-size", "4"])
-        assert code == 0 and "wrote" in out
-        assert "out" in called                          # apply_to_video was invoked
-        assert len(proj.runs("analyze")) == 1           # an analyze run was opened
+        monkeypatch.setattr(cli, "apply_to_videos", fake_apply_videos)
+        v1, v2 = Path(d) / "clip1.mp4", Path(d) / "clip2.mp4"
+        v1.write_bytes(b"v")
+        v2.write_bytes(b"v")
+        code, out = _run(["apply", str(v1), str(v2), "--project", str(proj.root),
+                          "--model-id", "m1", "--batch-size", "4"])
+        assert code == 0
+        assert len(seen["videos"]) == 2 and seen["batch_size"] == 4  # both videos, batch flag passed
+        assert len(proj.runs("analyze")) == 1                        # one analyze run for the batch
         assert proj.runs("analyze")[0].manifest().status == "finished"
+
+
+def test_apply_dispatch_dropin_model(monkeypatch):
+    with tempfile.TemporaryDirectory() as d:
+        proj = _model_project(Path(d))            # creates a bundle dir at models/m1
+        model_dir = proj.layout.model_dir("m1")
+        seen = {}
+
+        def fake_apply_videos(bundle, videos, out_root, **kw):
+            seen["out_root"] = Path(out_root)
+            return {str(v): Path(out_root) / "pose.parquet" for v in videos}
+
+        monkeypatch.setattr(cli, "apply_to_videos", fake_apply_videos)
+        v1 = Path(d) / "clip1.mp4"
+        v1.write_bytes(b"v")
+        code, out = _run(["apply", str(v1), "--model", str(model_dir), "--out", str(Path(d) / "preds")])
+        assert code == 0 and "pose.parquet" in out
+        assert seen["out_root"] == Path(d) / "preds"
+        assert len(proj.runs("analyze")) == 0     # drop-in mode opens no project run
 
 
 def test_train_dispatch(monkeypatch):

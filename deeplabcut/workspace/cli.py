@@ -16,8 +16,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import ids
-from .apply import apply_to_video
+from .apply import apply_to_videos, collect_videos
 from .evaluate import evaluate_model
 from .migrate import migrate_project
 from .model_bundle import ModelBundle
@@ -83,15 +82,33 @@ def cmd_videos(args) -> int:
 
 
 def cmd_apply(args) -> int:
+    videos = collect_videos(args.videos)
+    if not videos:
+        print("no videos found")
+        return 2
+
+    if args.model:  # project-less drop-in model
+        bundle = ModelBundle.open(args.model)
+        out_root = Path(args.out) if args.out else Path("dlc-predictions")
+        results = apply_to_videos(bundle, videos, out_root,
+                                  device=args.device, batch_size=args.batch_size)
+        for video, pose in results.items():
+            print(f"{video} -> {pose}")
+        return 0
+
+    if not args.model_id:
+        print("--model-id is required with --project")
+        return 2
     project = Project.open(args.project)
     bundle = ModelBundle.from_project(project, args.model_id)
-    video_id = ids.slugify(Path(args.video).stem)
-    run = project.new_run("analyze", model_id=args.model_id, inputs=[args.video])
+    run = project.new_run("analyze", model_id=args.model_id, inputs=[str(v) for v in videos])
     run.start()
-    out_path = apply_to_video(bundle, args.video, run.video_dir(video_id),
+    out_root = Path(args.out) if args.out else run.dir
+    results = apply_to_videos(bundle, videos, out_root,
                               device=args.device, batch_size=args.batch_size)
-    run.finish(outputs=[str(out_path)])
-    print(f"wrote {out_path}")
+    run.finish(outputs=[str(p) for p in results.values() if p])
+    for video, pose in results.items():
+        print(f"{video} -> {pose}")
     return 0
 
 
@@ -139,10 +156,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("project")
     p.set_defaults(func=cmd_videos)
 
-    p = sub.add_parser("apply", help="run a model on a video (no project scaffolding needed)")
-    p.add_argument("project")
-    p.add_argument("model_id")
-    p.add_argument("video")
+    p = sub.add_parser("apply", help="label one or more videos (files, folders, or globs)")
+    p.add_argument("videos", nargs="+", help="video files, directories, or glob patterns")
+    source = p.add_mutually_exclusive_group(required=True)
+    source.add_argument("--project", help="workspace project (use with --model-id)")
+    source.add_argument("--model", help="a model bundle directory (project-less drop-in)")
+    p.add_argument("--model-id", dest="model_id", help="model id inside --project")
+    p.add_argument("--out", help="output root directory")
     p.add_argument("--device")
     p.add_argument("--batch-size", type=int, default=1, dest="batch_size")
     p.set_defaults(func=cmd_apply)
