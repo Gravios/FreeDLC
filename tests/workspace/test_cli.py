@@ -176,6 +176,41 @@ def test_evaluate_dispatch(monkeypatch):
 
 
 # ------------------------------------------------------------------ smoke runner
+def test_label_dispatch_reads_sidecar(monkeypatch):
+    from deeplabcut.workspace import label_video
+    from deeplabcut.workspace.manifest import write_manifest
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        v = d / "clip.mp4"
+        v.write_bytes(b"v")
+        (d / "clip.fdlc.parquet").write_bytes(b"p")   # existence only; render is patched
+        write_manifest(d / "clip.fdlc.toml",
+                       {"bodyparts": ["snout", "tail"], "skeleton": [["snout", "tail"]]})
+        seen = {}
+
+        def fake_render(video, parquet, out_path, *, bodyparts, skeleton, pcutoff, **kw):
+            seen.update(parquet=Path(parquet).name, out=Path(out_path).name,
+                        bodyparts=bodyparts, skeleton=[list(e) for e in (skeleton or [])])
+            Path(out_path).write_bytes(b"mp4")
+            return Path(out_path)
+
+        monkeypatch.setattr(label_video, "render_labeled_from_parquet", fake_render)
+        code, out = _run(["label", str(v)])
+        assert code == 0
+        assert seen["parquet"] == "clip.fdlc.parquet"        # defaulted beside the video
+        assert seen["out"] == "clip.fdlc.mp4"
+        assert seen["bodyparts"] == ["snout", "tail"]        # from the .fdlc.toml sidecar
+        assert seen["skeleton"] == [["snout", "tail"]]
+
+
+def test_label_missing_parquet():
+    with tempfile.TemporaryDirectory() as d:
+        v = Path(d) / "clip.mp4"
+        v.write_bytes(b"v")
+        code, out = _run(["label", str(v)])
+        assert code == 2 and "no pose parquet" in out       # clear error when the parquet is absent
+
+
 def _run_smoke() -> int:
     class _MP:
         def setattr(self, obj, name, val):

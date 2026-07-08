@@ -155,6 +155,21 @@ def labeled_video_path(video: str | Path) -> Path:
     return video.parent / f"{video.stem}.fdlc.mp4"
 
 
+def sidecar_for_parquet(parquet: str | Path) -> Path:
+    """The ``.fdlc.toml`` sidecar paired with a ``.fdlc.parquet`` pose file."""
+    parquet = Path(parquet)
+    base = parquet.name[:-len(FDLC_SUFFIX)] if parquet.name.endswith(FDLC_SUFFIX) else parquet.stem
+    return parquet.with_name(f"{base}.fdlc.toml")
+
+
+def read_fdlc_sidecar(path: str | Path) -> tuple[list[str] | None, list[list[str]]]:
+    """Read ``bodyparts`` and ``skeleton`` from a ``.fdlc.toml`` sidecar."""
+    from .manifest import read_manifest
+
+    meta = read_manifest(path)
+    return (meta.get("bodyparts") or None), [list(e) for e in meta.get("skeleton", [])]
+
+
 def _render_labeled(video, df, out_path, bundle, skeleton, pcutoff) -> Path:
     from .label_video import render_labeled_video  # lazy: pulls cv2
 

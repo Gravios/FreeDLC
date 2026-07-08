@@ -105,3 +105,28 @@ def render_labeled_video(
         cap.release()
         writer.release()
     return out_path
+
+
+def render_labeled_from_parquet(
+    video: str | Path,
+    parquet: str | Path,
+    out_path: str | Path,
+    *,
+    bodyparts: Sequence[str] | None = None,
+    skeleton: Sequence[Sequence[str]] | None = None,
+    pcutoff: float = 0.6,
+    **kwargs,
+) -> Path:
+    """Render an annotated video from an already-written pose parquet.
+
+    ``bodyparts`` defaults to the distinct bodyparts in the parquet (in order of
+    first appearance) when not supplied.
+    """
+    import pandas as pd
+
+    df = pd.read_parquet(parquet)
+    if bodyparts is None:
+        bodyparts = list(dict.fromkeys(df["bodypart"]))
+    return render_labeled_video(
+        video, df, out_path, bodyparts=bodyparts, skeleton=skeleton, pcutoff=pcutoff, **kwargs,
+    )

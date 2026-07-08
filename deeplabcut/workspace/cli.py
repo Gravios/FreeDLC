@@ -16,7 +16,14 @@ import json
 import sys
 from pathlib import Path
 
-from .apply import apply_to_videos, collect_videos
+from .apply import (
+    apply_to_videos,
+    beside_video_path,
+    collect_videos,
+    labeled_video_path,
+    read_fdlc_sidecar,
+    sidecar_for_parquet,
+)
 from .evaluate import evaluate_model
 from .migrate import migrate_project
 from .model_bundle import ModelBundle
@@ -126,6 +133,45 @@ def cmd_apply(args) -> int:
     return 0
 
 
+def cmd_label(args) -> int:
+    from .label_video import render_labeled_from_parquet
+
+    video = Path(args.video)
+    parquet = Path(args.parquet) if args.parquet else beside_video_path(video)
+    if not parquet.is_file():
+        print(f"no pose parquet found at {parquet}")
+        return 2
+
+    # bodyparts + skeleton: explicit model/project, else the .fdlc.toml sidecar,
+    # else derive bodyparts from the parquet (skeleton absent).
+    bodyparts: list[str] | None = None
+    skeleton: list[list[str]] = []
+    if args.model:
+        card = ModelBundle.open(args.model).card
+        bodyparts, skeleton = list(card.bodyparts), list(card.skeleton)
+    elif args.project:
+        if not args.model_id:
+            print("--model-id is required with --project")
+            return 2
+        project = Project.open(args.project)
+        card = ModelBundle.from_project(project, args.model_id).card
+        bodyparts = list(card.bodyparts)
+        skeleton = list(card.skeleton) or list(project.config.skeleton)
+    else:
+        for sc in (sidecar_for_parquet(parquet), sidecar_for_parquet(beside_video_path(video))):
+            if sc.is_file():
+                bodyparts, skeleton = read_fdlc_sidecar(sc)
+                break
+
+    out = Path(args.out) if args.out else labeled_video_path(video)
+    result = render_labeled_from_parquet(
+        video, parquet, out, bodyparts=bodyparts, skeleton=skeleton,
+        pcutoff=args.pcutoff, dotsize=args.dotsize,
+    )
+    print(f"{video} -> {result}")
+    return 0
+
+
 def cmd_train(args) -> int:
     project = Project.open(args.project)
     config = TrainConfig(net_type=args.net, epochs=args.epochs, batch_size=args.batch_size,
@@ -186,6 +232,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--device")
     p.add_argument("--batch-size", type=int, default=1, dest="batch_size")
     p.set_defaults(func=cmd_apply)
+
+    p = sub.add_parser("label", help="render an annotated video from an existing .fdlc.parquet")
+    p.add_argument("video", help="source video to annotate")
+    p.add_argument("--parquet", help="pose parquet (default: <video-stem>.fdlc.parquet beside the video)")
+    p.add_argument("--out", help="output video (default: <video-stem>.fdlc.mp4 beside the video)")
+    p.add_argument("--project", help="project for bodyparts/skeleton (use with --model-id)")
+    p.add_argument("--model", help="model bundle for bodyparts/skeleton")
+    p.add_argument("--model-id", dest="model_id", help="model id inside --project")
+    p.add_argument("--pcutoff", type=float, default=0.6)
+    p.add_argument("--dotsize", type=int, default=5)
+    p.set_defaults(func=cmd_label)
 
     p = sub.add_parser("train", help="train a model natively from annotations (requires torch)")
     p.add_argument("project")
