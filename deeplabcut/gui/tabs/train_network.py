@@ -268,46 +268,7 @@ class TrainNetwork(DefaultTab):
 
 
 def get_train_attributes(engine: Engine) -> list[TrainAttributeRow]:
-    if engine == Engine.TF:
-        return [
-            TrainAttributeRow(
-                attributes=[
-                    IntTrainAttribute(
-                        label="Display iterations",
-                        fn_key="displayiters",
-                        default=1000,
-                        min=1,
-                        max=1000,
-                    ),
-                    IntTrainAttribute(
-                        label="Number of snapshots to keep",
-                        fn_key="max_snapshots_to_keep",
-                        default=5,
-                        min=1,
-                        max=100,
-                    ),
-                ],
-            ),
-            TrainAttributeRow(
-                attributes=[
-                    IntTrainAttribute(
-                        label="Maximum iterations",
-                        fn_key="maxiters",
-                        default=100_000,
-                        min=1,
-                        max=1_030_000,
-                    ),
-                    IntTrainAttribute(
-                        label="Save iterations",
-                        fn_key="saveiters",
-                        default=50_000,
-                        min=1,
-                        max=50_000,
-                    ),
-                ],
-            ),
-        ]
-    elif engine == Engine.PYTORCH:
+    if engine == Engine.PYTORCH:
         return [
             TrainAttributeRow(
                 attributes=[

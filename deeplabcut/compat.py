@@ -25,15 +25,6 @@ from deeplabcut.generate_training_dataset.metadata import get_shuffle_engine
 
 DEFAULT_ENGINE = Engine.PYTORCH
 
-# The TensorFlow engine implementation has been removed from this build. Shuffles /
-# projects created with it (Engine.TF) can no longer be trained, evaluated or analyzed;
-# the public API raises this message rather than silently doing nothing.
-_TF_REMOVED_MSG = (
-    "The TensorFlow engine has been removed from this build of DeepLabCut. This "
-    "project/shuffle was created with the TensorFlow engine (Engine.TF); retrain it "
-    "with the PyTorch engine (Engine.PYTORCH) to continue."
-)
-
 
 def get_project_engine(cfg: dict) -> Engine:
     """
@@ -61,9 +52,7 @@ def get_available_aug_methods(engine: Engine) -> tuple[str, ...]:
     Raises:
         RuntimeError: if no augmentations methods are defined for the given engine
     """
-    if engine == Engine.TF:
-        return "imgaug", "default", "deterministic", "scalecrop", "tensorpack"
-    elif engine == Engine.PYTORCH:
+    if engine == Engine.PYTORCH:
         return ("albumentations",)
 
     raise RuntimeError(f"Unknown augmentation for engine: {engine}")
@@ -272,9 +261,7 @@ def train_network(
             shuffle=shuffle,
         )
 
-    if engine == Engine.TF:
-        raise NotImplementedError(_TF_REMOVED_MSG)
-    elif engine == Engine.PYTORCH:
+    if engine == Engine.PYTORCH:
         from deeplabcut.pose_estimation_pytorch.apis import train_network
 
         return train_network(
@@ -342,9 +329,7 @@ def return_train_network_path(
             modelprefix=modelprefix,
         )
 
-    if engine == Engine.TF:
-        raise NotImplementedError(_TF_REMOVED_MSG)
-    elif engine == Engine.PYTORCH:
+    if engine == Engine.PYTORCH:
         from deeplabcut.pose_estimation_pytorch.apis.utils import (
             return_train_network_path,
         )
@@ -518,9 +503,7 @@ def evaluate_network(
             raise ValueError(f"All shuffles must have the same engine (found {list(engines)})")
         engine = engines.pop()
 
-    if engine == Engine.TF:
-        raise NotImplementedError(_TF_REMOVED_MSG)
-    elif engine == Engine.PYTORCH:
+    if engine == Engine.PYTORCH:
         from deeplabcut.pose_estimation_pytorch.apis import evaluate_network
 
         _update_device(gputouse, torch_kwargs)
@@ -617,9 +600,6 @@ def return_evaluate_network_data(
             shuffle=shuffle,
             modelprefix=modelprefix,
         )
-
-    if engine == Engine.TF:
-        raise NotImplementedError(_TF_REMOVED_MSG)
 
     raise NotImplementedError(f"This function is not implemented for {engine}")
 
@@ -878,9 +858,7 @@ def analyze_videos(
             modelprefix=modelprefix,
         )
 
-    if engine == Engine.TF:
-        raise NotImplementedError(_TF_REMOVED_MSG)
-    elif engine == Engine.PYTORCH:
+    if engine == Engine.PYTORCH:
         from deeplabcut.pose_estimation_pytorch.apis import analyze_videos
 
         _update_device(gputouse, torch_kwargs)
@@ -1021,9 +999,7 @@ def create_tracking_dataset(
             modelprefix=modelprefix,
         )
 
-    if engine == Engine.TF:
-        raise NotImplementedError(_TF_REMOVED_MSG)
-    elif engine == Engine.PYTORCH:
+    if engine == Engine.PYTORCH:
         from deeplabcut.pose_estimation_pytorch.apis import create_tracking_dataset
 
         return create_tracking_dataset(
@@ -1303,9 +1279,7 @@ def analyze_time_lapse_frames(
             modelprefix=modelprefix,
         )
 
-    if engine == Engine.TF:
-        raise NotImplementedError(_TF_REMOVED_MSG)
-    elif engine == Engine.PYTORCH:
+    if engine == Engine.PYTORCH:
         from deeplabcut.pose_estimation_pytorch import analyze_images
 
         return analyze_images(
@@ -1441,10 +1415,7 @@ def convert_detections2tracklets(
             modelprefix=modelprefix,
         )
 
-    if engine == Engine.TF:
-        raise NotImplementedError(_TF_REMOVED_MSG)
-
-    elif engine == Engine.PYTORCH:
+    if engine == Engine.PYTORCH:
         from deeplabcut.pose_estimation_pytorch.apis import convert_detections2tracklets
 
         if greedy or calibrate or window_size:
@@ -1537,9 +1508,7 @@ def extract_maps(
             modelprefix=modelprefix,
         )
 
-    if engine == Engine.TF:
-        raise NotImplementedError(_TF_REMOVED_MSG)
-    elif engine == Engine.PYTORCH:
+    if engine == Engine.PYTORCH:
         from deeplabcut.pose_estimation_pytorch import extract_maps
 
         return extract_maps(
@@ -1700,9 +1669,7 @@ def extract_save_all_maps(
             modelprefix=modelprefix,
         )
 
-    if engine == Engine.TF:
-        raise NotImplementedError(_TF_REMOVED_MSG)
-    elif engine == Engine.PYTORCH:
+    if engine == Engine.PYTORCH:
         from deeplabcut.pose_estimation_pytorch import extract_save_all_maps
 
         return extract_save_all_maps(
@@ -1800,9 +1767,7 @@ def export_model(
             modelprefix=modelprefix,
         )
 
-    if engine == Engine.TF:
-        raise NotImplementedError(_TF_REMOVED_MSG)
-    elif engine == Engine.PYTORCH:
+    if engine == Engine.PYTORCH:
         from deeplabcut.pose_estimation_pytorch.apis.export import export_model
 
         return export_model(

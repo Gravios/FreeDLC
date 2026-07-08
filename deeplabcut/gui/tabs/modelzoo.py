@@ -379,9 +379,7 @@ class ModelZoo(DefaultTab):
         self.main_layout.addWidget(self.torch_widget)
 
     def _adapt_checkbox_status_changed(self, state: int) -> None:
-        if self.root.engine == Engine.TF:
-            set_layout_contents_visible(self.tf_adaptation_settings_row, Qt.CheckState(state) == Qt.Checked)
-        elif self.root.engine == Engine.PYTORCH:
+        if self.root.engine == Engine.PYTORCH:
             set_layout_contents_visible(self.torch_adaptation_settings_row, Qt.CheckState(state) == Qt.Checked)
             if Qt.CheckState(state) == Qt.Checked:
                 self._update_adaptation_detector_visibility(self.model_combo.currentText())
@@ -527,34 +525,20 @@ class ModelZoo(DefaultTab):
     def _gather_kwargs(self) -> dict:
         kwargs = dict(model_name=self.net_type_selector.currentText())
 
-        if self.root.engine == Engine.TF:
-            scales = []
-            scales_ = self.scales_line.text()
-            if scales_:
-                if self.scales_line.validator().validate(scales_, 0)[0] == RegExpValidator.Acceptable:
-                    scales = list(map(int, scales_.split(",")))
-            kwargs["scale_list"] = scales
-            kwargs["video_adapt"] = self.adapt_checkbox.isChecked()
-            kwargs["pseudo_threshold"] = self.pseudo_threshold_spinbox.value()
-            kwargs["adapt_iterations"] = self.adapt_iter_spinbox.value()
-        else:
-            kwargs["detector_name"] = self.detector_type_selector.currentText()
-            kwargs["video_adapt"] = self.adapt_checkbox.isChecked()
-            kwargs["pseudo_threshold"] = self.pose_threshold_spinbox.value()
-            kwargs["bbox_threshold"] = self.detector_threshold_spinbox.value()
-            kwargs["detector_epochs"] = self.torch_adapt_det_epoch_spinbox.value()
-            kwargs["pose_epochs"] = self.torch_adapt_epoch_spinbox.value()
-            kwargs["max_individuals"] = self.max_individuals_spinbox.value()
+        kwargs["detector_name"] = self.detector_type_selector.currentText()
+        kwargs["video_adapt"] = self.adapt_checkbox.isChecked()
+        kwargs["pseudo_threshold"] = self.pose_threshold_spinbox.value()
+        kwargs["bbox_threshold"] = self.detector_threshold_spinbox.value()
+        kwargs["detector_epochs"] = self.torch_adapt_det_epoch_spinbox.value()
+        kwargs["pose_epochs"] = self.torch_adapt_epoch_spinbox.value()
+        kwargs["max_individuals"] = self.max_individuals_spinbox.value()
 
         return kwargs
 
     def _update_available_models(self, engine: Engine) -> None:
         current_dataset = self.model_combo.currentText()
 
-        if engine == Engine.TF:
-            supermodels = ["superanimal_topviewmouse", "superanimal_quadruped"]
-        else:
-            supermodels = dlclibrary.get_available_datasets()
+        supermodels = dlclibrary.get_available_datasets()
 
         set_combo_items(
             combo_box=self.model_combo,
@@ -569,7 +553,7 @@ class ModelZoo(DefaultTab):
 
         set_combo_items(
             combo_box=self.net_type_selector,
-            items=(["dlcrnet"] if self.root.engine == Engine.TF else dlclibrary.get_available_models(super_animal)),
+            items=dlclibrary.get_available_models(super_animal),
         )
 
     def _update_detectors(self, super_animal: str) -> None:

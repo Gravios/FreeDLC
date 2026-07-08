@@ -260,9 +260,6 @@ def create_new_project(
         if engine in Engine.PYTORCH.aliases:
             cfg_file["default_augmenter"] = "albumentations"
             cfg_file["default_net_type"] = "resnet_50"
-        elif engine in Engine.TF.aliases:
-            cfg_file["default_augmenter"] = "multi-animal-imgaug"
-            cfg_file["default_net_type"] = "dlcrnet_ms5"
         else:
             raise ValueError(f"Unknown or undefined engine {engine}")
         cfg_file["default_track_method"] = "ellipse"

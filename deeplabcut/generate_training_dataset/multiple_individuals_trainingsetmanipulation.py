@@ -26,15 +26,12 @@ from deeplabcut.core.config import ProjectConfig
 from deeplabcut.core.engine import Engine
 from deeplabcut.core.weight_init import WeightInitialization
 from deeplabcut.utils import (
-    auxfun_models,
     auxfun_multianimal,
     auxiliaryfunctions,
 )
 
 from .trainingsetmanipulation import (
     MakeInference_yaml,
-    MakeTest_pose_yaml,
-    MakeTrain_pose_yaml,
     SplitTrials,
     merge_annotateddatasets,
     pad_train_test_indices,
@@ -318,17 +315,8 @@ def create_multianimaltraining_dataset(
     if not (any(net in net_type for net in ("resnet", "eff", "dlc", "mob")) or engine == Engine.PYTORCH):
         raise ValueError(f"Unsupported network {net_type} for engine {engine}.")
 
-    multi_stage = False
     ### dlcnet_ms5: backbone resnet50 + multi-fusion & multi-stage module
     ### dlcr101_ms5/dlcr152_ms5: backbone resnet101/152 + multi-fusion & multi-stage module
-    if all(net in net_type for net in ("dlcr", "_ms5")) and engine != Engine.PYTORCH:
-        num_layers = re.findall("dlcr([0-9]*)", net_type)[0]
-        if num_layers == "":
-            num_layers = 50
-        net_type = f"resnet_{num_layers}"
-        multi_stage = True
-
-    dataset_type = "multi-animal-imgaug"
     (
         individuals,
         uniquebodyparts,
@@ -363,17 +351,8 @@ def create_multianimaltraining_dataset(
         auxfun_multianimal.validate_paf_graph(cfg, partaffinityfield_graph)
 
     print("Utilizing the following graph:", partaffinityfield_graph)
-    # Disable the prediction of PAFs if the graph is empty
-    partaffinityfield_predict = bool(partaffinityfield_graph)
 
-    # Loading the encoder (if necessary downloading from TF)
     dlcparent_path = auxiliaryfunctions.get_deeplabcut_path()
-    defaultconfigfile = os.path.join(dlcparent_path, "pose_cfg.yaml")
-
-    if engine == Engine.PYTORCH:
-        model_path = dlcparent_path
-    else:
-        model_path = auxfun_models.check_for_weights(net_type, Path(dlcparent_path))
 
     Shuffles = validate_shuffles(cfg, Shuffles, num_shuffles, userfeedback)
 
@@ -495,75 +474,7 @@ def create_multianimaltraining_dataset(
                 )
             )
 
-            if engine == Engine.TF:
-                jointnames = [str(bpt) for bpt in multianimalbodyparts]
-                jointnames.extend([str(bpt) for bpt in uniquebodyparts])
-                items2change = {
-                    "dataset": datafilename,
-                    "engine": engine.aliases[0],
-                    "metadataset": metadatafilename,
-                    "num_joints": len(multianimalbodyparts) + len(uniquebodyparts),  # cfg["uniquebodyparts"]),
-                    "all_joints": [
-                        [i] for i in range(len(multianimalbodyparts) + len(uniquebodyparts))
-                    ],  # cfg["uniquebodyparts"]))],
-                    "all_joints_names": jointnames,
-                    "init_weights": str(model_path),
-                    "project_path": str(cfg["project_path"]),
-                    "net_type": net_type,
-                    "multi_stage": multi_stage,
-                    "pairwise_loss_weight": 0.1,
-                    "pafwidth": 20,
-                    "partaffinityfield_graph": partaffinityfield_graph,
-                    "partaffinityfield_predict": partaffinityfield_predict,
-                    "weigh_only_present_joints": False,
-                    "num_limbs": len(partaffinityfield_graph),
-                    "dataset_type": dataset_type,
-                    "optimizer": "adam",
-                    "batch_size": 8,
-                    "multi_step": [[1e-4, 7500], [5 * 1e-5, 12000], [1e-5, 200000]],
-                    "save_iters": 10000,
-                    "display_iters": 500,
-                    "num_idchannel": (len(cfg["individuals"]) if cfg.get("identity", False) else 0),
-                    "crop_size": list(crop_size),
-                    "crop_sampling": crop_sampling,
-                }
-
-                trainingdata = MakeTrain_pose_yaml(
-                    items2change,
-                    path_train_config,
-                    defaultconfigfile,
-                    save=(engine == Engine.TF),
-                )
-                keys2save = [
-                    "dataset",
-                    "num_joints",
-                    "all_joints",
-                    "all_joints_names",
-                    "net_type",
-                    "multi_stage",
-                    "init_weights",
-                    "global_scale",
-                    "location_refinement",
-                    "locref_stdev",
-                    "dataset_type",
-                    "partaffinityfield_predict",
-                    "pairwise_predict",
-                    "partaffinityfield_graph",
-                    "num_limbs",
-                    "dataset_type",
-                    "num_idchannel",
-                ]
-
-                MakeTest_pose_yaml(
-                    trainingdata,
-                    keys2save,
-                    path_test_config,
-                    nmsradius=5.0,
-                    minconfidence=0.01,
-                    sigma=1,
-                    locref_smooth=False,
-                )  # setting important def. values for inference
-            elif engine == Engine.PYTORCH:
+            if engine == Engine.PYTORCH:
                 from deeplabcut.pose_estimation_pytorch.config.make_pose_config import (
                     make_pytorch_pose_config,
                     make_pytorch_test_config,

@@ -31,12 +31,6 @@ class Engine(EngineDataMixin, Enum):
         "pytorch_config.yaml",
         "evaluation-results-pytorch",
     )
-    TF = (
-        ("tensorflow", "tf"),
-        "dlc-models",
-        "pose_cfg.yaml",
-        "evaluation-results",
-    )
 
     @classmethod
     def _missing_(cls, value):

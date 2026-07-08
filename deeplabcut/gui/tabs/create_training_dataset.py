@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 import re
-from importlib import import_module
 from pathlib import Path
 
 import dlclibrary
@@ -36,7 +35,6 @@ from deeplabcut.gui.components import (
     set_combo_items,
 )
 from deeplabcut.gui.displays.shuffle_metadata_viewer import ShuffleMetadataViewer
-from deeplabcut.gui.dlc_params import DLCParams
 from deeplabcut.gui.widgets import launch_napari
 from deeplabcut.modelzoo import build_weight_init
 from deeplabcut.pose_estimation_pytorch import (
@@ -245,12 +243,7 @@ class CreateTrainingDataset(DefaultTab):
                 net_type = self.net_choice.currentText()
                 detector_type = None
                 ctd_conditions = None
-                if engine == Engine.TF:
-                    import_module("tensorflow")
-
-                    # try importing TF so they can't create shuffles for it if they
-                    # don't have it installed
-                elif engine == Engine.PYTORCH:
+                if engine == Engine.PYTORCH:
                     if is_model_top_down(net_type):
                         detector_type = self.detector_choice.currentText()
                     elif is_model_cond_top_down(net_type):
@@ -427,30 +420,20 @@ class CreateTrainingDataset(DefaultTab):
             engine = self.root.engine
 
         default_net = None
-        if engine == Engine.TF:
-            nets = DLCParams.NNETS.copy()
-            if not self.root.is_multianimal:
-                nets.remove("dlcrnet_ms5")
-        else:
-            nets = available_models()
-            net_filter = self.get_net_filter()
-            default_net = self.get_default_net()
-            td_prefix = "top_down_"
-            if net_filter is not None:
-                nets = [
-                    n
-                    for n in nets
-                    if (n in net_filter or (n.startswith(td_prefix) and n[len(td_prefix) :] in net_filter))
-                ]
+        nets = available_models()
+        net_filter = self.get_net_filter()
+        default_net = self.get_default_net()
+        td_prefix = "top_down_"
+        if net_filter is not None:
+            nets = [
+                n
+                for n in nets
+                if (n in net_filter or (n.startswith(td_prefix) and n[len(td_prefix) :] in net_filter))
+            ]
 
         if default_net is None:
             default_net = self.root.cfg.get("default_net_type", "resnet_50")
-        if (
-            engine == Engine.TF
-            and default_net not in DLCParams.NNETS
-            or engine == Engine.PYTORCH
-            and default_net not in available_models()
-        ):
+        if default_net not in available_models():
             default_net = "resnet_50"
 
         set_combo_items(
@@ -468,16 +451,13 @@ class CreateTrainingDataset(DefaultTab):
         if engine is None:
             engine = self.root.engine
 
-        if engine == Engine.TF:
-            detectors = []
-        else:
-            # FIXME: Circular imports make it impossible to import this at the top
-            from deeplabcut.pose_estimation_pytorch import available_detectors
+        # FIXME: Circular imports make it impossible to import this at the top
+        from deeplabcut.pose_estimation_pytorch import available_detectors
 
-            detectors = available_detectors()
-            det_filter = self.get_detector_filter()
-            if det_filter is not None:
-                detectors = [d for d in detectors if d in det_filter]
+        detectors = available_detectors()
+        det_filter = self.get_detector_filter()
+        if det_filter is not None:
+            detectors = [d for d in detectors if d in det_filter]
 
         default_detector = self.get_default_detector()
         try:

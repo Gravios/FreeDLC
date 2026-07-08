@@ -272,7 +272,7 @@ def get_model_folder(
     shuffle: int,
     cfg: dict,
     modelprefix: str = "",
-    engine: Engine = Engine.TF,
+    engine: Engine = Engine.PYTORCH,
 ) -> Path:
     """
     Args:

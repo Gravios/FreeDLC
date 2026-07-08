@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import logging
 import pickle
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -104,9 +103,9 @@ class TrainingDatasetMetadata:
     the "training-datasets" folder is still empty.
 
     For existing projects (created with DeepLabCut < 3.0), calling
-    TrainingDatasetMetadata.create(cfg) will go over documentation data for all existing
-    shuffles in the training-datasets folder and add them to a new metadata instance.
-    All shuffles will be given Engine.TF as an engine.
+    TrainingDatasetMetadata.create(cfg) returns empty metadata: legacy
+    TensorFlow-era shuffles are unsupported, and PyTorch shuffles already carry
+    their own metadata file.
 
     Examples:
         # Creating the metadata file for an existing project
@@ -280,8 +279,8 @@ class TrainingDatasetMetadata:
     def create(config: ProjectConfig | dict | Path | str) -> TrainingDatasetMetadata:
         """Function to create the metadata file.
 
-        Assumes that all existing shuffles use the TensorFlow engine, as this file
-        should have already been created for PyTorch shuffles.
+        Legacy TensorFlow-era shuffles are no longer supported; PyTorch shuffles
+        already have their own metadata file, so this returns empty metadata.
 
         Args:
             config (ProjectConfig | dict | Path | str): The project configuration.
@@ -293,45 +292,12 @@ class TrainingDatasetMetadata:
         cfg = ProjectConfig.from_any(config)
 
         trainset_path = TrainingDatasetMetadata.path(cfg).parent
-        if trainset_path.exists():
-            shuffle_docs = [
-                f for f in trainset_path.iterdir() if re.match(r"Documentation_data-.+shuffle[0-9]+\.pickle", f.name)
-            ]
-        else:
-            trainset_path.mkdir(parents=True)
-            shuffle_docs = []
+        trainset_path.mkdir(parents=True, exist_ok=True)
 
-        prefix = cfg["Task"] + cfg["date"]
-        shuffles = []
-        existing_splits: dict[tuple[tuple[int, ...], tuple[int, ...]], int] = {}
-        for doc_path in shuffle_docs:
-            index = int(doc_path.stem.split("shuffle")[-1])
-            with open(doc_path, "rb") as f:
-                _, train_idx, test_idx, train_frac = pickle.load(f)
-
-            engine = Engine.TF
-            train_idx = tuple(sorted([int(idx) for idx in train_idx]))
-            test_idx = tuple(sorted([int(idx) for idx in test_idx]))
-            split_idx = existing_splits.get((train_idx, test_idx))
-            if split_idx is None:
-                split_idx = len(existing_splits) + 1
-                existing_splits[(train_idx, test_idx)] = split_idx
-
-            shuffles.append(
-                ShuffleMetadata(
-                    name=f"{prefix}-trainset{int(100 * train_frac)}shuffle{index}",
-                    train_fraction=train_frac,
-                    index=index,
-                    engine=engine,
-                    split=DataSplit(train_indices=train_idx, test_indices=test_idx),
-                )
-            )
-
-        shuffles = tuple(sorted(shuffles, key=lambda s: (s.train_fraction, s.index)))
-        return TrainingDatasetMetadata(
-            project_config=cfg,
-            shuffles=shuffles,
-        )
+        # Legacy TensorFlow-era shuffles (Documentation_data-*.pickle) are no longer
+        # supported now that the TF engine has been removed. PyTorch shuffles already
+        # have their own metadata file, so there is nothing to synthesize here.
+        return TrainingDatasetMetadata(project_config=cfg, shuffles=())
 
     @staticmethod
     def path(cfg: ProjectConfig | dict | Path | str) -> Path:

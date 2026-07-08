@@ -53,7 +53,6 @@ from .create_project import (
     add_new_videos,
     create_new_project,
     create_new_project_3d,
-    create_pretrained_human_project,
     create_pretrained_project,
     load_demo_data,
 )
@@ -186,7 +185,6 @@ _PROJECT_EXPORTS = [
     "add_new_videos",
     "create_new_project",
     "create_new_project_3d",
-    "create_pretrained_human_project",
     "create_pretrained_project",
     "load_demo_data",
 ]

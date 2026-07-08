@@ -119,7 +119,7 @@ class SelectedShuffleDisplay(QtWidgets.QWidget):
     def _read_pose_config(self, pose_cfg_path: Path) -> None:
         pose_cfg = auxiliaryfunctions.read_plainconfig(str(pose_cfg_path))
 
-        self._engine = Engine.PYTORCH if "pytorch" in pose_cfg_path.stem.lower() else Engine.TF
+        self._engine = Engine.PYTORCH
         self._net_type = pose_cfg.get("net_type", "UNKNOWN")
         self._is_top_down = self._engine == Engine.PYTORCH and pose_cfg.get("method").lower() == "td"
         self.pose_cfg = pose_cfg
