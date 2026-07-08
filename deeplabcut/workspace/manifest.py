@@ -12,11 +12,11 @@ Reading uses the standard library (:mod:`tomllib`); writing uses ``tomli_w``.
 """
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 from typing import Any
 
 import tomli_w
-import tomllib
 
 __all__ = ["read_manifest", "write_manifest", "update_manifest"]
 

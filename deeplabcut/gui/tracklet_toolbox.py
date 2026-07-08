@@ -288,7 +288,7 @@ class PointSelector:
 class TrackletVisualizer:
     def __init__(self, manager, videoname, trail_len=50):
         self.manager = manager
-        self.cmap = plt.cm.get_cmap(manager.cfg["colormap"], len(set(manager.tracklet2id)))
+        self.cmap = plt.get_cmap(manager.cfg["colormap"], len(set(manager.tracklet2id)))
         self.videoname = videoname
         self.video = VideoReader(videoname)
         self.nframes = len(self.video)

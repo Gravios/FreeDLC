@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 __all__ = [
@@ -46,7 +46,7 @@ RUN_KINDS = ("train", "evaluate", "analyze")
 
 def now_iso() -> str:
     """Current UTC time as a second-resolution ISO-8601 string."""
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
 def _require(d: dict[str, Any], *keys: str, ctx: str) -> None:

@@ -1,7 +1,7 @@
 from pathlib import Path
+from typing import Self
 
 from pydantic import Field
-from typing_extensions import Self
 
 from deeplabcut.core.config import DLCBaseConfig, ProjectConfig
 from deeplabcut.core.config.validation import UniqueStrList

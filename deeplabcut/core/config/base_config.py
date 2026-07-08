@@ -5,12 +5,11 @@ import logging
 import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 from pydantic_core import ArgsKwargs
 from ruamel.yaml.comments import CommentedMap
-from typing_extensions import Self
 
 from deeplabcut.core.config import versioning as versioning
 from deeplabcut.core.config.utils import (

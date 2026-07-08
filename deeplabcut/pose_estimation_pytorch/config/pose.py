@@ -18,8 +18,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from deeplabcut.core.weight_init import WeightInitialization
 
+from typing import Self
+
 from pydantic import Field, field_validator
-from typing_extensions import Self
 
 from deeplabcut.core.config import DLCBaseConfig, DLCVersionedConfig, ProjectConfig
 from deeplabcut.core.config.validation import Fraction, NonNegativeInt, UniqueStrList

@@ -14,10 +14,10 @@ from __future__ import annotations
 
 import warnings
 from pathlib import Path
+from typing import Self
 
 import numpy as np
 from pydantic import field_validator, model_validator
-from typing_extensions import Self
 
 from deeplabcut.core.config import DLCBaseConfig
 from deeplabcut.core.config.validation import NDArrayInt
