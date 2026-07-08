@@ -190,6 +190,58 @@ def test_apply_to_videos_beside_video(monkeypatch):
         assert meta["bodyparts"] == ["snout"]
 
 
+def test_apply_labeled_video_wiring(monkeypatch):
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        bundle = _bundle(d, bodyparts=("snout", "tail"))
+        _patch_inference(monkeypatch)
+        calls = []
+
+        def fake_render(video, df, out_path, bundle, skeleton, pcutoff):
+            calls.append((Path(video).name, Path(out_path).name,
+                          tuple(tuple(e) for e in (skeleton or [])), pcutoff))
+            Path(out_path).write_bytes(b"mp4")
+            return Path(out_path)
+
+        monkeypatch.setattr(apply_mod, "_render_labeled", fake_render)
+        viddir = d / "src"
+        viddir.mkdir()
+        v = viddir / "clip.mp4"
+        v.write_bytes(b"v")
+
+        ws.apply_to_videos(bundle, [v], d / "ig", beside_video=True,
+                           skeleton=[["snout", "tail"]], labeled_video=True, pcutoff=0.5)
+        assert calls == [("clip.mp4", "clip.fdlc.mp4", (("snout", "tail"),), 0.5)]  # routed to .fdlc.mp4
+        assert (viddir / "clip.fdlc.mp4").exists()
+
+
+def test_render_labeled_video_real():
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return  # cv2 not present in this env; wiring is covered above
+    from deeplabcut.workspace.label_video import render_labeled_video
+
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        v = d / "clip.mp4"
+        w = cv2.VideoWriter(str(v), cv2.VideoWriter_fourcc(*"mp4v"), 10.0, (64, 48))
+        for _ in range(4):
+            w.write(np.full((48, 64, 3), 30, np.uint8))
+        w.release()
+        rows = [(f, "single", bp, 10.0 + f, 20.0, 0.99)
+                for f in range(4) for bp in ("snout", "tail")]
+        df = pd.DataFrame(rows, columns=["frame", "individual", "bodypart", "x", "y", "likelihood"])
+        out = render_labeled_video(v, df, d / "clip.fdlc.mp4",
+                                   bodyparts=["snout", "tail"], skeleton=[["snout", "tail"]])
+        assert out.exists() and out.stat().st_size > 0
+        cap = cv2.VideoCapture(str(out))
+        n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
+        assert n == 4
+
+
 # ------------------------------------------------------------------ smoke runner
 def _run_smoke() -> int:
     class _MP:

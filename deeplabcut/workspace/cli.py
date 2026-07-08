@@ -96,35 +96,33 @@ def cmd_apply(args) -> int:
         project = Project.open(args.project)
         bundle = ModelBundle.from_project(project, args.model_id)
 
-    # --beside-video: write <stem>.fdlc.parquet + <stem>.fdlc.toml next to each source video
-    if args.beside_video:
-        # skeleton edges: from the project (project mode) else the bundle (drop-in)
-        skeleton = list(bundle.card.skeleton)
-        if not args.model and not skeleton:
-            skeleton = list(project.config.skeleton)
-        results = apply_to_videos(bundle, videos, Path("."),
-                                  device=args.device, batch_size=args.batch_size,
-                                  beside_video=True, skeleton=skeleton)
+    # skeleton edges: from the bundle (drop-in) else the project (project mode)
+    skeleton = list(bundle.card.skeleton)
+    if not args.model and not skeleton:
+        skeleton = list(project.config.skeleton)
+    common = dict(device=args.device, batch_size=args.batch_size, skeleton=skeleton,
+                  labeled_video=args.labeled_video, pcutoff=args.pcutoff)
+
+    def _report(results):
         for video, pose in results.items():
             print(f"{video} -> {pose}")
+
+    # --beside-video: <stem>.fdlc.{parquet,toml}(+ .fdlc.mp4) next to each source video
+    if args.beside_video:
+        _report(apply_to_videos(bundle, videos, Path("."), beside_video=True, **common))
         return 0
 
-    if args.model:
+    if args.model:  # drop-in, run-dir output
         out_root = Path(args.out) if args.out else Path("dlc-predictions")
-        results = apply_to_videos(bundle, videos, out_root,
-                                  device=args.device, batch_size=args.batch_size)
-        for video, pose in results.items():
-            print(f"{video} -> {pose}")
+        _report(apply_to_videos(bundle, videos, out_root, **common))
         return 0
 
     run = project.new_run("analyze", model_id=args.model_id, inputs=[str(v) for v in videos])
     run.start()
     out_root = Path(args.out) if args.out else run.dir
-    results = apply_to_videos(bundle, videos, out_root,
-                              device=args.device, batch_size=args.batch_size)
+    results = apply_to_videos(bundle, videos, out_root, **common)
     run.finish(outputs=[str(p) for p in results.values() if p])
-    for video, pose in results.items():
-        print(f"{video} -> {pose}")
+    _report(results)
     return 0
 
 
@@ -181,6 +179,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", help="output root directory")
     p.add_argument("--beside-video", action="store_true", dest="beside_video",
                    help="write <video-stem>.fdlc.parquet next to each source video (no run dir)")
+    p.add_argument("--labeled-video", action="store_true", dest="labeled_video",
+                   help="also render an annotated .fdlc.mp4 with keypoints + skeleton")
+    p.add_argument("--pcutoff", type=float, default=0.6,
+                   help="likelihood threshold for drawing keypoints in the labeled video")
     p.add_argument("--device")
     p.add_argument("--batch-size", type=int, default=1, dest="batch_size")
     p.set_defaults(func=cmd_apply)
