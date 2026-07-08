@@ -58,7 +58,7 @@ class TorchvisionDetectorAdaptor(BaseDetector):
         num_classes: int | None = 2,
         freeze_bn_stats: bool = False,
         freeze_bn_weights: bool = False,
-        box_score_thresh: float = 0.01,
+        box_score_thresh: float | None = 0.01,
         model_kwargs: dict | None = None,
     ) -> None:
         super().__init__(
@@ -66,6 +66,13 @@ class TorchvisionDetectorAdaptor(BaseDetector):
             freeze_bn_weights=freeze_bn_weights,
             pretrained=weights is not None,
         )
+
+        # The detector config schema defaults box_score_thresh to None ("use the
+        # model default"), but torchvision stores it directly as RoIHeads.score_thresh
+        # and later does `scores > score_thresh`, which raises on None. Coalesce here so
+        # a config that omits the key still yields a runnable detector.
+        if box_score_thresh is None:
+            box_score_thresh = 0.01
 
         # Load the model
         model_fn = getattr(detection, model)
