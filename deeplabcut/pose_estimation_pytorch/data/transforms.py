@@ -92,7 +92,7 @@ def build_transforms(augmentations: dict) -> A.BaseCompose:
                 min_height=crop_sampling["height"],
                 min_width=crop_sampling["width"],
                 border_mode=cv2.BORDER_CONSTANT,
-                always_apply=True,
+                p=1.0,
             )
         )
         transforms.append(
@@ -129,8 +129,8 @@ def build_transforms(augmentations: dict) -> A.BaseCompose:
             noise = 0.05 * 255
         transforms.append(
             A.GaussNoise(
-                var_limit=(0, noise**2),
-                mean=0,
+                std_range=(0.0, noise / 255.0),
+                mean_range=(0.0, 0.0),
                 per_channel=True,
                 # Albumentations doesn't support per_channel = 0.5
                 p=0.5,
@@ -199,8 +199,8 @@ def build_auto_padding(
         pad_width_divisor=pad_width_divisor,
         position=position,
         border_mode=border_modes[border_mode],
-        value=border_value,
-        mask_value=border_mask_value,
+        fill=border_value if border_value is not None else 0,
+        fill_mask=border_mask_value if border_mask_value is not None else 0,
     )
 
 
@@ -215,7 +215,7 @@ def build_resize_transforms(resize_cfg: dict) -> list[A.BasicTransform]:
                 min_height=height,
                 min_width=width,
                 border_mode=cv2.BORDER_CONSTANT,
-                position=A.PadIfNeeded.PositionType.TOP_LEFT,
+                position="top_left",
             )
         )
     else:
