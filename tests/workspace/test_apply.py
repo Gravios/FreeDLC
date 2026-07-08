@@ -234,7 +234,8 @@ def test_render_labeled_video_real():
                 for f in range(4) for bp in ("snout", "tail")]
         df = pd.DataFrame(rows, columns=["frame", "individual", "bodypart", "x", "y", "likelihood"])
         out = render_labeled_video(v, df, d / "clip.fdlc.mp4",
-                                   bodyparts=["snout", "tail"], skeleton=[["snout", "tail"]])
+                                   bodyparts=["snout", "tail"], skeleton=[["snout", "tail"]],
+                                   progress=False)
         assert out.exists() and out.stat().st_size > 0
         cap = cv2.VideoCapture(str(out))
         n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))

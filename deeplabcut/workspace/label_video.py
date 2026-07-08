@@ -53,15 +53,18 @@ def render_labeled_video(
     pcutoff: float = 0.6,
     dotsize: int = 5,
     line_thickness: int = 1,
+    progress: bool = True,
 ) -> Path:
     """Write an annotated copy of ``video`` to ``out_path``; return that path.
 
     Requires cv2 at call time. Keypoints and skeleton edges below ``pcutoff`` (or
-    with non-finite coordinates) are skipped.
+    with non-finite coordinates) are skipped. A tqdm progress bar over the frames
+    is shown unless ``progress=False``.
     """
     import math
 
     import cv2
+    from tqdm import tqdm
 
     video, out_path = Path(video), Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -83,6 +86,8 @@ def render_labeled_video(
     def _ok(pt) -> bool:
         return pt is not None and pt[2] >= pcutoff and math.isfinite(pt[0]) and math.isfinite(pt[1])
 
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or None
+    bar = tqdm(total=total, desc="Labeling video", unit="frame", disable=not progress)
     try:
         idx = 0
         while True:
@@ -101,7 +106,9 @@ def render_labeled_video(
                                    dotsize, colors.get(bp, (0, 0, 255)), -1)
             writer.write(frame)
             idx += 1
+            bar.update(1)
     finally:
+        bar.close()
         cap.release()
         writer.release()
     return out_path
