@@ -426,7 +426,6 @@ def _create_inference_config(inference_cfg_path: str | Path, project_cfg: dict):
     MakeInference_yaml(inf_updates, inference_cfg_path, default_inf_path)
 
 
-@renamed_parameter(old="videotype", new="video_extensions", since="3.0.0")
 def _create_training_datasets_metadata(config: dict, shuffle_dir_name: str, engine: Engine):
     # First create the metadata object
     metadata = TrainingDatasetMetadata.create(config)
