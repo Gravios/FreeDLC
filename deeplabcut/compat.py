@@ -629,7 +629,6 @@ def analyze_videos(
     animal_names: list[str] | None = None,
     calibrate: bool = False,
     identity_only: bool = False,
-    use_openvino: str | None = None,
     engine: Engine | None = None,
     **torch_kwargs,
 ):
@@ -773,10 +772,6 @@ def analyze_videos(
         will be set to `len(animal_names)`. If `n_tracks` is not None, then it must be
         equal to `len(animal_names)`. If it is not given, then `animal_names` will
         be loaded from the `individuals` in the project config.yaml file.
-
-    use_openvino: str, optional
-        Only for the TensorFlow engine.
-        Use "CPU" for inference if OpenVINO is available in the Python environment.
 
     engine: Engine, optional, default = None.
         The default behavior loads the engine for the shuffle from the metadata. You can
