@@ -168,7 +168,7 @@ def _bundle_from_legacy(model: LegacyModel, dest: Path, model_id: str) -> ModelB
             "iteration": model.iteration,
             "shuffle": model.shuffle,
             "train_fraction": model.train_fraction,
-            "train_dir": str(model.train_dir),
+            "source": model.train_dir.parent.name,
         },
     )
 

@@ -29,6 +29,51 @@ from .util import code_version
 __all__ = ["ModelBundle"]
 
 
+def _portable_pose_config(cfg: dict) -> dict:
+    """Return a copy of a pose config with machine-specific absolute paths removed.
+
+    A trained model's ``pytorch_config.yaml`` embeds absolute paths (the source
+    project, the config's own location, and the pretrained ``weight_init``
+    checkpoints used at training time). None of these are needed to run
+    inference, and keeping them would make the bundle non-relocatable -- so they
+    are stripped. ``pose_config_path`` is left as the relative ``pose.yaml`` and
+    resolved to the bundle's real location at runtime.
+    """
+    import copy
+
+    cfg = copy.deepcopy(cfg)
+    meta = cfg.setdefault("metadata", {})
+    meta["project_path"] = ""
+    meta["pose_config_path"] = "pose.yaml"
+    # weight_init is a training-only concern and carries absolute checkpoint paths.
+    train_settings = cfg.get("train_settings")
+    if isinstance(train_settings, dict):
+        train_settings.pop("weight_init", None)
+    return cfg
+
+
+def _place_snapshot(src: str | Path, dst: Path, link: str) -> None:
+    """Copy or symlink a snapshot into the bundle (``link`` is ``copy``|``symlink``)."""
+    if dst.exists() or dst.is_symlink():
+        dst.unlink()
+    if link == "symlink":
+        dst.symlink_to(Path(src).resolve())
+    elif link == "copy":
+        shutil.copy2(src, dst)
+    else:
+        raise ValueError(f"link must be 'copy' or 'symlink', got {link!r}")
+
+
+def _write_portable_pose_config(src: str | Path, dst: Path) -> None:
+    """Read a pose config, strip absolute paths, and write it to ``dst``."""
+    import yaml
+
+    with Path(src).open() as fh:
+        cfg = yaml.safe_load(fh) or {}
+    with dst.open("w") as fh:
+        yaml.safe_dump(_portable_pose_config(cfg), fh, sort_keys=False)
+
+
 class ModelBundle:
     """A portable trained-model directory."""
 
@@ -64,16 +109,17 @@ class ModelBundle:
         train_run_id: str | None = None,
         metrics: dict | None = None,
         legacy: dict | None = None,
+        link: str = "copy",
         exist_ok: bool = False,
     ) -> ModelBundle:
         """Assemble a portable bundle at ``dest`` from a trained model's files.
 
-        Copies the pose config to ``dest/pose.yaml`` and the snapshot to
-        ``dest/snapshots/`` (recorded as the default snapshot), optionally a
-        detector snapshot for top-down models, and writes ``model.toml``.
-
-        This is the "lift the two files out of a project into a portable bundle"
-        operation. Nothing here needs torch.
+        Writes a path-stripped copy of the pose config to ``dest/pose.yaml`` and
+        places the snapshot into ``dest/snapshots/`` (recorded as the default
+        snapshot), optionally a detector snapshot for top-down models, and writes
+        ``model.toml``. ``link`` places snapshots by ``copy`` (default) or
+        ``symlink`` (useful for large checkpoints). The bundle contains no
+        absolute paths, so it can be moved anywhere. Nothing here needs torch.
         """
         dest = Path(dest)
         if (dest / "model.toml").exists() and not exist_ok:
@@ -84,14 +130,14 @@ class ModelBundle:
         snapshots = dest / "snapshots"
         snapshots.mkdir(parents=True, exist_ok=True)
 
-        shutil.copy2(pose_config_src, dest / "pose.yaml")
+        _write_portable_pose_config(pose_config_src, dest / "pose.yaml")
         pose_name = f"pose-{Path(snapshot_src).name}"
-        shutil.copy2(snapshot_src, snapshots / pose_name)
+        _place_snapshot(snapshot_src, snapshots / pose_name, link)
 
         detector_name: str | None = None
         if detector_snapshot_src is not None:
             detector_name = f"detector-{Path(detector_snapshot_src).name}"
-            shutil.copy2(detector_snapshot_src, snapshots / detector_name)
+            _place_snapshot(detector_snapshot_src, snapshots / detector_name, link)
 
         card = ModelCard(
             model_id=model_id or ids.new_model_id(),
@@ -123,13 +169,19 @@ class ModelBundle:
         train_run_id: str | None = None,
         metrics: dict | None = None,
         legacy: dict | None = None,
+        snapshots: str = "all",
+        link: str = "copy",
         exist_ok: bool = False,
     ) -> ModelBundle:
         """Harvest a PyTorch ``train`` directory into a portable bundle.
 
         Reads ``pytorch_config.yaml`` and the ``snapshot-*.pt`` checkpoints,
-        picks the default snapshot (best, else highest epoch), copies every
-        snapshot in, and writes ``model.toml``. Shared by migration and training.
+        picks the default snapshot (best, else highest epoch), and writes
+        ``model.toml``. ``snapshots="all"`` brings every checkpoint across;
+        ``snapshots="best"`` keeps only the default pose (and detector) snapshot
+        -- useful when the training run holds many large checkpoints. ``link``
+        places snapshots by ``copy`` (default) or ``symlink``. The resulting
+        bundle is path-free and relocatable. Shared by migration and training.
         """
         from . import _snapshots
 
@@ -156,14 +208,17 @@ class ModelBundle:
             train_run_id=train_run_id,
             metrics=metrics,
             legacy=legacy,
+            link=link,
             exist_ok=exist_ok,
         )
+        if snapshots == "best":
+            return bundle
         for src in pose:
             if src != default_pose:
-                shutil.copy2(src, bundle.snapshots_dir / f"pose-{src.name}")
+                _place_snapshot(src, bundle.snapshots_dir / f"pose-{src.name}", link)
         for src in detector:
             if src != default_det:
-                shutil.copy2(src, bundle.snapshots_dir / f"detector-{src.name}")
+                _place_snapshot(src, bundle.snapshots_dir / f"detector-{src.name}", link)
         return bundle
 
     # -- paths ------------------------------------------------------------
@@ -228,7 +283,7 @@ class ModelBundle:
         from deeplabcut.pose_estimation_pytorch import get_pose_inference_runner
 
         return get_pose_inference_runner(
-            model_config=self._read_pose_config(),
+            model_config=str(self.pose_config_path),
             snapshot_path=str(self.snapshot_path(snapshot)),
             batch_size=batch_size,
             device=device,
@@ -248,7 +303,7 @@ class ModelBundle:
         from deeplabcut.pose_estimation_pytorch import get_detector_inference_runner
 
         return get_detector_inference_runner(
-            model_config=self._read_pose_config(),
+            model_config=str(self.pose_config_path),
             snapshot_path=str(self.detector_snapshot_path(snapshot)),
             batch_size=batch_size,
             device=device,
