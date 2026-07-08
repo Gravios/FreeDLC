@@ -109,6 +109,7 @@ class ModelBundle:
         train_run_id: str | None = None,
         metrics: dict | None = None,
         legacy: dict | None = None,
+        skeleton: list[list[str]] | None = None,
         link: str = "copy",
         exist_ok: bool = False,
     ) -> ModelBundle:
@@ -150,6 +151,7 @@ class ModelBundle:
             code_version=code_version(),
             metrics=dict(metrics or {}),
             legacy=dict(legacy or {}),
+            skeleton=[list(e) for e in (skeleton or [])],
         )
         write_manifest(dest / "model.toml", card.to_dict())
         return cls(dest, card)
@@ -169,6 +171,7 @@ class ModelBundle:
         train_run_id: str | None = None,
         metrics: dict | None = None,
         legacy: dict | None = None,
+        skeleton: list[list[str]] | None = None,
         snapshots: str = "all",
         link: str = "copy",
         exist_ok: bool = False,
@@ -208,6 +211,7 @@ class ModelBundle:
             train_run_id=train_run_id,
             metrics=metrics,
             legacy=legacy,
+            skeleton=skeleton,
             link=link,
             exist_ok=exist_ok,
         )

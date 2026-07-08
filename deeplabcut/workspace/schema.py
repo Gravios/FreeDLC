@@ -142,6 +142,7 @@ class ModelCard:
     code_version: str | None = None
     metrics: dict[str, Any] = field(default_factory=dict)
     legacy: dict[str, Any] = field(default_factory=dict)
+    skeleton: list[list[str]] = field(default_factory=list)
     schema_version: int = SCHEMA_VERSION
 
     def __post_init__(self) -> None:

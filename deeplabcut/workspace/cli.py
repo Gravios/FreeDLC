@@ -96,11 +96,15 @@ def cmd_apply(args) -> int:
         project = Project.open(args.project)
         bundle = ModelBundle.from_project(project, args.model_id)
 
-    # --beside-video: write <stem>.fdlc.parquet next to each source video, no run dir
+    # --beside-video: write <stem>.fdlc.parquet + <stem>.fdlc.toml next to each source video
     if args.beside_video:
+        # skeleton edges: from the project (project mode) else the bundle (drop-in)
+        skeleton = list(bundle.card.skeleton)
+        if not args.model and not skeleton:
+            skeleton = list(project.config.skeleton)
         results = apply_to_videos(bundle, videos, Path("."),
                                   device=args.device, batch_size=args.batch_size,
-                                  beside_video=True)
+                                  beside_video=True, skeleton=skeleton)
         for video, pose in results.items():
             print(f"{video} -> {pose}")
         return 0

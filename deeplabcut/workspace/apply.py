@@ -26,7 +26,7 @@ from typing import Any
 
 from . import ids
 from .manifest import write_manifest
-from .schema import RunManifest, now_iso
+from .schema import SCHEMA_VERSION, RunManifest, now_iso
 from .util import code_version
 
 log = logging.getLogger(__name__)
@@ -143,6 +143,33 @@ def beside_video_path(video: str | Path) -> Path:
     return video.parent / f"{video.stem}{FDLC_SUFFIX}"
 
 
+def fdlc_sidecar_path(video: str | Path) -> Path:
+    """Sidecar metadata path next to the source video: ``<dir>/<stem>.fdlc.toml``."""
+    video = Path(video)
+    return video.parent / f"{video.stem}.fdlc.toml"
+
+
+def _write_fdlc_sidecar(video, pose_path, bundle, *, skeleton, params, snapshot, started) -> Path:
+    """Write the ``<stem>.fdlc.toml`` sidecar: provenance + bodyparts + skeleton edges."""
+    video = Path(video)
+    card = bundle.card
+    data = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "analyze",
+        "started": started,
+        "finished": now_iso(),
+        "model_id": card.model_id,
+        "snapshot": card.default_snapshot if snapshot == "default" else snapshot,
+        "input": str(video.resolve()),
+        "output": Path(pose_path).name,
+        "bodyparts": list(card.bodyparts),
+        "skeleton": [list(e) for e in (skeleton or [])],
+        "params": dict(params),
+        "code_version": code_version(),
+    }
+    return write_manifest(fdlc_sidecar_path(video), data)
+
+
 def collect_videos(paths: Sequence[str | Path], *, extensions=VIDEO_EXTENSIONS) -> list[Path]:
     """Expand file / directory / glob paths into a sorted, de-duplicated video list.
 
@@ -238,6 +265,7 @@ def apply_to_video(
     cropping: list[int] | None = None,
     write: bool = True,
     beside_video: bool = False,
+    skeleton: list[list[str]] | None = None,
     runners=None,
 ):
     """Run a :class:`ModelBundle` on one video, writing ``pose.parquet`` + ``run.toml``.
@@ -245,8 +273,9 @@ def apply_to_video(
     Needs no project. Requires torch at call time (via the runner + video
     inference). Returns the path to the written ``pose.parquet`` (or the
     in-memory DataFrame when ``write=False``). With ``beside_video=True`` the
-    pose is written as ``<video-stem>.fdlc.parquet`` next to the source video and
-    no run directory or ``run.toml`` is created. Pass ``runners`` (from
+    pose is written as ``<video-stem>.fdlc.parquet`` next to the source video,
+    together with a ``<video-stem>.fdlc.toml`` sidecar (provenance, bodyparts, and
+    ``skeleton`` edges), and no run directory is created. Pass ``runners`` (from
     :func:`apply_to_videos`) to reuse a runner already built for this bundle.
     """
     started = now_iso()
@@ -260,7 +289,13 @@ def apply_to_video(
     if not write:
         return df
     if beside_video:
-        return write_pose_parquet(df, beside_video_path(video))
+        pose_path = write_pose_parquet(df, beside_video_path(video))
+        _write_fdlc_sidecar(
+            video, pose_path, bundle, skeleton=skeleton,
+            params={"batch_size": batch_size, "device": device, "cropping": cropping},
+            snapshot=snapshot, started=started,
+        )
+        return pose_path
     return _write_video_outputs(
         df, video, out_dir, bundle,
         snapshot=snapshot, batch_size=batch_size, device=device, cropping=cropping, started=started,
@@ -279,6 +314,7 @@ def apply_to_videos(
     max_individuals: int | None = None,
     cropping: list[int] | None = None,
     beside_video: bool = False,
+    skeleton: list[list[str]] | None = None,
     on_error: str = "raise",
 ) -> dict[str, Path | None]:
     """Label several videos with one bundle, building the runner **once**.
@@ -304,7 +340,7 @@ def apply_to_videos(
                 bundle, video, out_dir,
                 snapshot=snapshot, detector_snapshot=detector_snapshot,
                 device=device, batch_size=batch_size, cropping=cropping,
-                beside_video=beside_video, runners=runners,
+                beside_video=beside_video, skeleton=skeleton, runners=runners,
             )
         except Exception:
             if on_error != "skip":

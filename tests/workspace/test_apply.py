@@ -141,9 +141,29 @@ def test_apply_to_videos_on_error_raise(monkeypatch):
 def test_beside_video_path():
     p = apply_mod.beside_video_path("/data/vids/sess/clip-0001-20250901.mp4")
     assert p == Path("/data/vids/sess/clip-0001-20250901.fdlc.parquet")
+    t = apply_mod.fdlc_sidecar_path("/data/vids/sess/clip-0001-20250901.mp4")
+    assert t == Path("/data/vids/sess/clip-0001-20250901.fdlc.toml")
+
+
+def test_bundle_carries_skeleton():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        bundle = _bundle(d, bodyparts=("snout", "tail"))
+        # default is empty; a bundle created with a skeleton persists it
+        assert bundle.card.skeleton == []
+        cfg = d / "pc.yaml"
+        cfg.write_text("net_type: resnet_50\nmetadata: {bodyparts: [snout, tail]}\n")
+        snap = d / "s.pt"
+        snap.write_bytes(b"w")
+        b2 = ws.ModelBundle.create(d / "b2", pose_config_src=cfg, snapshot_src=snap,
+                                   architecture="resnet_50", bodyparts=["snout", "tail"],
+                                   model_id="b2", skeleton=[["snout", "tail"]])
+        assert b2.card.skeleton == [["snout", "tail"]]
+        assert ws.ModelBundle.open(d / "b2").card.skeleton == [["snout", "tail"]]
 
 
 def test_apply_to_videos_beside_video(monkeypatch):
+    import tomllib
     with tempfile.TemporaryDirectory() as d:
         d = Path(d)
         bundle = _bundle(d)
@@ -153,12 +173,21 @@ def test_apply_to_videos_beside_video(monkeypatch):
         v = viddir / "stroh-kj-0001-20250901.mp4"
         v.write_bytes(b"v")
 
-        results = ws.apply_to_videos(bundle, [v], d / "ignored", beside_video=True)
+        results = ws.apply_to_videos(bundle, [v], d / "ignored", beside_video=True,
+                                     skeleton=[["snout", "tail"], ["tail", "tip"]])
         expected = viddir / "stroh-kj-0001-20250901.fdlc.parquet"
-        assert results[str(v)] == expected           # <video-stem>.fdlc.parquet next to the video
+        assert results[str(v)] == expected              # <video-stem>.fdlc.parquet next to the video
         assert expected.exists()
-        assert not (d / "ignored").exists()           # out_root ignored in beside mode
-        assert not (viddir / "run.toml").exists()     # source dir stays clean (no run.toml)
+        assert not (d / "ignored").exists()             # out_root ignored in beside mode
+        assert not (viddir / "run.toml").exists()       # no legacy run.toml in the source dir
+
+        sidecar = viddir / "stroh-kj-0001-20250901.fdlc.toml"
+        assert sidecar.exists()                         # <stem>.fdlc.toml sidecar written beside
+        meta = tomllib.loads(sidecar.read_text())
+        assert meta["skeleton"] == [["snout", "tail"], ["tail", "tip"]]   # skeleton edges included
+        assert meta["output"] == expected.name
+        assert meta["model_id"] == "m1"
+        assert meta["bodyparts"] == ["snout"]
 
 
 # ------------------------------------------------------------------ smoke runner
