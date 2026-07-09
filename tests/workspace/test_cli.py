@@ -211,6 +211,27 @@ def test_label_missing_parquet():
         assert code == 2 and "no pose parquet" in out       # clear error when the parquet is absent
 
 
+def test_track_dispatch(monkeypatch):
+    from deeplabcut.workspace import track as track_mod
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        pq = d / "clip.fdlc.parquet"
+        pq.write_bytes(b"p")
+        seen = {}
+
+        def fake_track_parquet(parquet, out_path, **kw):
+            seen.update(out=Path(out_path).name, kw=kw)
+            Path(out_path).write_bytes(b"t")
+            return Path(out_path), 3
+
+        monkeypatch.setattr(track_mod, "track_parquet", fake_track_parquet)
+        code, out = _run(["track", str(pq), "--max-distance", "30"])
+        assert code == 0
+        assert seen["out"] == "clip.tracked.fdlc.parquet"      # default tracked name
+        assert seen["kw"]["max_distance"] == 30.0
+        assert "3 tracks" in out
+
+
 def _run_smoke() -> int:
     class _MP:
         def setattr(self, obj, name, val):

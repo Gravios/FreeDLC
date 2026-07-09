@@ -172,6 +172,20 @@ def cmd_label(args) -> int:
     return 0
 
 
+def cmd_track(args) -> int:
+    from .track import track_parquet, tracked_parquet_path
+
+    parquet = Path(args.parquet)
+    if not parquet.is_file():
+        print(f"no pose parquet found at {parquet}")
+        return 2
+    out = Path(args.out) if args.out else tracked_parquet_path(parquet)
+    result, n = track_parquet(parquet, out, max_distance=args.max_distance,
+                              max_gap=args.max_gap, pcutoff=args.pcutoff)
+    print(f"{parquet} -> {result}  ({n} tracks)")
+    return 0
+
+
 def cmd_train(args) -> int:
     project = Project.open(args.project)
     config = TrainConfig(net_type=args.net, epochs=args.epochs, batch_size=args.batch_size,
@@ -243,6 +257,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pcutoff", type=float, default=0.6)
     p.add_argument("--dotsize", type=int, default=5)
     p.set_defaults(func=cmd_label)
+
+    p = sub.add_parser("track", help="assign cross-frame identities to a pose parquet")
+    p.add_argument("parquet", help="pose parquet from apply (per-frame instances)")
+    p.add_argument("--out", help="output parquet (default: <base>.tracked.fdlc.parquet)")
+    p.add_argument("--max-distance", type=float, default=50.0, dest="max_distance",
+                   help="max centroid movement (px) to link an instance to a track")
+    p.add_argument("--max-gap", type=int, default=10, dest="max_gap",
+                   help="frames a track may be unseen before it is retired")
+    p.add_argument("--pcutoff", type=float, default=0.6)
+    p.set_defaults(func=cmd_track)
 
     p = sub.add_parser("train", help="train a model natively from annotations (requires torch)")
     p.add_argument("project")
