@@ -186,6 +186,13 @@ def cmd_track(args) -> int:
     return 0
 
 
+def cmd_export(args) -> int:
+    bundle = ModelBundle.open(args.bundle)
+    out = bundle.export_onnx(opset=args.opset)
+    print(f"exported {out}")
+    return 0
+
+
 def cmd_train(args) -> int:
     project = Project.open(args.project)
     config = TrainConfig(net_type=args.net, epochs=args.epochs, batch_size=args.batch_size,
@@ -267,6 +274,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="frames a track may be unseen before it is retired")
     p.add_argument("--pcutoff", type=float, default=0.6)
     p.set_defaults(func=cmd_track)
+
+    p = sub.add_parser("export", help="export a bundle's pose model to ONNX (requires torch)")
+    p.add_argument("bundle", help="model bundle directory")
+    p.add_argument("--opset", type=int, default=17)
+    p.set_defaults(func=cmd_export)
 
     p = sub.add_parser("train", help="train a model natively from annotations (requires torch)")
     p.add_argument("project")

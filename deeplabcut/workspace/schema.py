@@ -143,6 +143,8 @@ class ModelCard:
     metrics: dict[str, Any] = field(default_factory=dict)
     legacy: dict[str, Any] = field(default_factory=dict)
     skeleton: list[list[str]] = field(default_factory=list)
+    pose_onnx: str | None = None
+    detector_onnx: str | None = None
     schema_version: int = SCHEMA_VERSION
 
     def __post_init__(self) -> None:

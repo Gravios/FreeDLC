@@ -69,6 +69,10 @@ email = "mackenzie@deeplabcut.org"
 name = "Mathis Group for Computational Neuroscience and AI"
 email = "alexander@deeplabcut.org"
 [project.optional-dependencies]
+onnx = [
+  "onnx>=1.16",
+  "onnxruntime>=1.18",
+]
 gui = [
   "napari-deeplabcut>=0.3.1",
   "pyside6; platform_system!='Linux' or platform_machine!='x86_64'",

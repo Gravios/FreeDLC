@@ -239,6 +239,29 @@ class ModelBundle:
     def snapshots_dir(self) -> Path:
         return self.path / "snapshots"
 
+    @property
+    def pose_onnx_path(self) -> Path:
+        """Path to the pose ONNX model (whether or not it exists yet)."""
+        return self.snapshots_dir / (self.card.pose_onnx or "pose.onnx")
+
+    @property
+    def has_pose_onnx(self) -> bool:
+        return bool(self.card.pose_onnx) and self.pose_onnx_path.exists()
+
+    def export_onnx(self, *, opset: int = 17, dynamic: bool = True) -> Path:
+        """Export the default pose model to ``snapshots/pose.onnx`` and record it.
+
+        Requires torch (imported lazily by the exporter). MILESTONE 1: the export
+        path is scaffolded and unverified in torch-free environments -- see
+        docs/onnx_export.md and onnx_export.export_pose_onnx.
+        """
+        from .onnx_export import export_pose_onnx
+
+        out = export_pose_onnx(self, self.snapshots_dir / "pose.onnx", opset=opset, dynamic=dynamic)
+        self.card.pose_onnx = out.name
+        write_manifest(self.path / "model.toml", self.card.to_dict())
+        return out
+
     def snapshot_path(self, which: str = "default") -> Path:
         """Resolve a pose snapshot path.
 
@@ -277,13 +300,24 @@ class ModelBundle:
         device: str | None = None,
         batch_size: int = 1,
         max_individuals: int | None = None,
+        backend: str = "torch",
         **kwargs,
     ):
-        """Build a pose :class:`InferenceRunner` from this bundle.
+        """Build a pose inference runner from this bundle.
 
-        Requires torch (imported lazily). Equivalent to the documented
-        project-less path ``get_pose_inference_runner(model_cfg, snapshot)``.
+        ``backend="torch"`` (default) returns DLC's ``InferenceRunner`` (needs
+        torch). ``backend="onnx"`` returns an :class:`OnnxRunner` over
+        ``pose_onnx_path`` (needs onnxruntime). MILESTONE 1: the ONNX runner is a
+        forward-pass session wrapper; wiring its outputs through the decoder to
+        match the torch runner's interface is milestone 2 (docs/onnx_export.md).
         """
+        if backend == "onnx":
+            from .onnx_export import OnnxRunner
+
+            return OnnxRunner(str(self.pose_onnx_path), device=device)
+        if backend != "torch":
+            raise ValueError(f"backend must be 'torch' or 'onnx', got {backend!r}")
+
         from deeplabcut.pose_estimation_pytorch import get_pose_inference_runner
 
         return get_pose_inference_runner(

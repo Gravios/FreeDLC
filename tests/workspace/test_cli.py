@@ -232,6 +232,28 @@ def test_track_dispatch(monkeypatch):
         assert "3 tracks" in out
 
 
+def test_export_dispatch(monkeypatch):
+    from deeplabcut.workspace import onnx_export
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        proj = _model_project(d)
+        bundle_dir = proj.layout.model_dir("m1")
+
+        called = {}
+
+        def fake_export(bundle, out_path, *, opset, dynamic):
+            called["opset"] = opset
+            Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(out_path).write_bytes(b"onnx")
+            return Path(out_path)
+
+        monkeypatch.setattr(onnx_export, "export_pose_onnx", fake_export)
+        code, out = _run(["export", str(bundle_dir), "--opset", "18"])
+        assert code == 0 and "exported" in out
+        assert called["opset"] == 18
+        assert ws.ModelBundle.open(bundle_dir).card.pose_onnx == "pose.onnx"   # card recorded
+
+
 def _run_smoke() -> int:
     class _MP:
         def setattr(self, obj, name, val):
