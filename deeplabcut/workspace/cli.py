@@ -187,7 +187,19 @@ def cmd_track(args) -> int:
 
 
 def cmd_export(args) -> int:
+    from .onnx_export import check_onnx_parity
+
     bundle = ModelBundle.open(args.bundle)
+    if args.check:
+        result = check_onnx_parity(bundle, opset=args.opset, atol=args.atol,
+                                   rtol=args.rtol, batch=args.batch)
+        for label, rep in result["reports"].items():
+            for row in rep["rows"]:
+                mark = "OK" if row["passed"] else "MISMATCH"
+                print(f"  [{label}] {row['name']}: max|delta|={row['max_diff']:.2e}  {mark}")
+        print("PARITY:", "PASS" if result["ok"] else "FAIL")
+        if not result["ok"]:
+            return 1                                     # don't export a model that doesn't match
     out = bundle.export_onnx(opset=args.opset)
     print(f"exported {out}")
     return 0
@@ -278,6 +290,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("export", help="export a bundle's pose model to ONNX (requires torch)")
     p.add_argument("bundle", help="model bundle directory")
     p.add_argument("--opset", type=int, default=17)
+    p.add_argument("--check", action="store_true",
+                   help="verify onnxruntime matches torch forward before exporting")
+    p.add_argument("--atol", type=float, default=1e-3)
+    p.add_argument("--rtol", type=float, default=1e-3)
+    p.add_argument("--batch", type=int, default=8, help="batch size for the parity check")
     p.set_defaults(func=cmd_export)
 
     p = sub.add_parser("train", help="train a model natively from annotations (requires torch)")

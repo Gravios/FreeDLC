@@ -254,6 +254,39 @@ def test_export_dispatch(monkeypatch):
         assert ws.ModelBundle.open(bundle_dir).card.pose_onnx == "pose.onnx"   # card recorded
 
 
+def test_export_check_dispatch(monkeypatch):
+    from deeplabcut.workspace import onnx_export
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        proj = _model_project(d)
+        bundle_dir = proj.layout.model_dir("m1")
+
+        def fake_export(bundle, out_path, **kw):
+            Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(out_path).write_bytes(b"onnx")
+            return Path(out_path)
+
+        monkeypatch.setattr(onnx_export, "export_pose_onnx", fake_export)
+
+        # PASS -> exports, exit 0
+        monkeypatch.setattr(onnx_export, "check_onnx_parity", lambda bundle, **kw: {
+            "ok": True,
+            "reports": {"batch=1": {"ok": True,
+                                    "rows": [{"name": "bp.heatmap", "max_diff": 1e-7, "passed": True}]}},
+        })
+        code, out = _run(["export", str(bundle_dir), "--check"])
+        assert code == 0 and "PARITY: PASS" in out and "exported" in out
+
+        # FAIL -> no export, exit 1
+        monkeypatch.setattr(onnx_export, "check_onnx_parity", lambda bundle, **kw: {
+            "ok": False,
+            "reports": {"batch=1": {"ok": False,
+                                    "rows": [{"name": "bp.heatmap", "max_diff": 0.5, "passed": False}]}},
+        })
+        code, out = _run(["export", str(bundle_dir), "--check"])
+        assert code == 1 and "PARITY: FAIL" in out
+
+
 def _run_smoke() -> int:
     class _MP:
         def setattr(self, obj, name, val):

@@ -108,6 +108,25 @@ def test_build_pose_runner_rejects_unknown_backend():
             raise AssertionError("unknown backend should raise ValueError")
 
 
+def test_flatten_outputs_order():
+    from deeplabcut.workspace.onnx_export import _flatten_outputs
+    out = {"bp": {"locref": 2, "heatmap": 1}, "aux": {"x": 9}}
+    assert _flatten_outputs(out) == [("aux.x", 9), ("bp.heatmap", 1), ("bp.locref", 2)]
+    assert _flatten_outputs({"z": 5}) == [("z", 5)]          # non-dict leaf
+
+
+def test_parity_report_pass_fail_and_shape():
+    import numpy as np
+
+    from deeplabcut.workspace.onnx_export import _parity_report
+    a = np.zeros((2, 2))
+    assert _parity_report(["h"], [a], [a + 1e-6], atol=1e-3)["ok"]
+    fail = _parity_report(["h"], [a], [a + 0.5], atol=1e-3)
+    assert not fail["ok"] and abs(fail["rows"][0]["max_diff"] - 0.5) < 1e-9
+    shape = _parity_report(["h"], [np.zeros((2, 2))], [np.zeros((2, 3))], atol=1.0)
+    assert not shape["ok"]                                   # shape mismatch fails even within atol
+
+
 def _run() -> int:
     checks = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for c in checks:
