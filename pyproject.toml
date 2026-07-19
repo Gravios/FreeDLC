@@ -72,6 +72,8 @@ email = "alexander@deeplabcut.org"
 onnx = [
   "onnx>=1.16",
   "onnxruntime>=1.18",
+  # torch's modern (dynamo) onnx exporter imports onnxscript at export time
+  "onnxscript>=0.2",
 ]
 gui = [
   "napari-deeplabcut>=0.3.1",
