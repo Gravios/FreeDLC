@@ -69,6 +69,15 @@ email = "mackenzie@deeplabcut.org"
 name = "Mathis Group for Computational Neuroscience and AI"
 email = "alexander@deeplabcut.org"
 [project.optional-dependencies]
+# Everything a user might want in one install: `pip install deeplabcut[all]`.
+# (docs is build tooling and is intentionally left out.)
+all = [
+  "deeplabcut[onnx]",
+  "deeplabcut[gui]",
+  "deeplabcut[fmpose3d]",
+  "deeplabcut[modelzoo]",
+  "deeplabcut[wandb]",
+]
 onnx = [
   "onnx>=1.16",
   "onnxruntime>=1.18",
