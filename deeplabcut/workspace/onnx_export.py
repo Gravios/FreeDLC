@@ -99,7 +99,7 @@ def _crop_hw(cfg) -> tuple[int, int]:
     return int(crop["height"]), int(crop["width"])
 
 
-def export_pose_onnx(bundle, out_path: str | Path, *, opset: int = 17, dynamic: bool = True) -> Path:
+def export_pose_onnx(bundle, out_path: str | Path, *, opset: int = 18, dynamic: bool = True) -> Path:
     """Trace the bundle's default pose model to ONNX. Requires torch; UNVERIFIED here."""
     import torch
 
@@ -122,7 +122,7 @@ def export_pose_onnx(bundle, out_path: str | Path, *, opset: int = 17, dynamic: 
     return out_path
 
 
-def check_onnx_parity(bundle, *, opset: int = 17, atol: float = 1e-3, rtol: float = 1e-3,
+def check_onnx_parity(bundle, *, opset: int = 18, atol: float = 1e-3, rtol: float = 1e-3,
                       batch: int = 8) -> dict:
     """Export, then assert onnxruntime matches torch on the same input. Requires torch.
 

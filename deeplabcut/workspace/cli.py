@@ -289,7 +289,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("export", help="export a bundle's pose model to ONNX (requires torch)")
     p.add_argument("bundle", help="model bundle directory")
-    p.add_argument("--opset", type=int, default=17)
+    p.add_argument("--opset", type=int, default=18)
     p.add_argument("--check", action="store_true",
                    help="verify onnxruntime matches torch forward before exporting")
     p.add_argument("--atol", type=float, default=1e-3)

@@ -248,7 +248,7 @@ class ModelBundle:
     def has_pose_onnx(self) -> bool:
         return bool(self.card.pose_onnx) and self.pose_onnx_path.exists()
 
-    def export_onnx(self, *, opset: int = 17, dynamic: bool = True) -> Path:
+    def export_onnx(self, *, opset: int = 18, dynamic: bool = True) -> Path:
         """Export the default pose model to ``snapshots/pose.onnx`` and record it.
 
         Requires torch (imported lazily by the exporter). MILESTONE 1: the export

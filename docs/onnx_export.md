@@ -32,10 +32,10 @@ Two seams, mirroring what already exists for the torch path:
 
 ```
 ModelCard:  + pose_onnx: str | None      + detector_onnx: str | None
-ModelBundle: + export_onnx(opset=17, dynamic=True)
+ModelBundle: + export_onnx(opset=18, dynamic=True)
              + build_pose_runner(..., backend="torch"|"onnx")
 apply:       unchanged (runner is an interface)
-cli:         + dlc-ws export <bundle> [--onnx] [--opset 17]
+cli:         + dlc-ws export <bundle> [--onnx] [--opset 18]
 ```
 
 ## Export path (sketch)
@@ -45,7 +45,7 @@ the same ones `get_pose_inference_runner` uses internally. Export is: build it,
 put it in eval mode, trace with a dummy input, write ONNX with dynamic axes.
 
 ```python
-def export_pose_onnx(bundle, out_path, *, opset=17, dynamic=True):
+def export_pose_onnx(bundle, out_path, *, opset=18, dynamic=True):
     import torch
     from deeplabcut.pose_estimation_pytorch.models import PoseModel  # the builder DLC uses
 
