@@ -3,11 +3,15 @@
 #
 """``dlc-ws`` -- a command-line interface over the workspace.
 
-Thin wrappers around the workspace API: ``migrate``, ``info``, ``models``,
-``videos``, ``apply``, ``train``, ``evaluate``. Uses only argparse (no extra
-dependencies), and each handler calls a single workspace function, so parsing and
-dispatch are testable without torch; the torch-backed commands (apply/train/
-evaluate) simply call their (lazily torch-importing) workspace functions.
+Thin wrappers around the workspace API: ``create``, ``migrate``, ``info``,
+``models``, ``videos``, ``apply``, ``label``, ``track``, ``export``, ``train``,
+``evaluate``. Uses only argparse (no extra dependencies), and each handler calls a
+single workspace function, so parsing and dispatch are testable without torch; the
+torch-backed commands (apply/train/evaluate) simply call their (lazily
+torch-importing) workspace functions.
+
+``create`` and ``migrate`` are the two ways to obtain a project: the former builds
+one from scratch, the latter converts a legacy DeepLabCut tree.
 """
 from __future__ import annotations
 
@@ -31,6 +35,64 @@ from .project import Project
 from .train import TrainConfig, WorkspaceTrainBackend, train_model
 
 __all__ = ["main", "build_parser"]
+
+
+def _parse_skeleton(
+    tokens: list[str], bodyparts: list[str], unique_bodyparts: list[str]
+) -> list[list[str]]:
+    """Parse ``A,B`` command-line tokens into validated ``[a, b]`` skeleton edges.
+
+    Edges may reference any declared part (``bodyparts`` or ``unique_bodyparts``);
+    naming a part that was never declared is almost always a typo, so it is
+    rejected here rather than silently producing edges that never render. This
+    check lives in the CLI, not in :class:`~deeplabcut.workspace.schema.ProjectConfig`,
+    so that migrating a legacy project with a stale ``skeleton`` keeps working.
+
+    Raises:
+        ValueError: if a token is not a comma-separated pair, or names an
+            undeclared bodypart.
+    """
+    known = set(bodyparts) | set(unique_bodyparts)
+    edges: list[list[str]] = []
+    for token in tokens:
+        pair = [part.strip() for part in token.split(",")]
+        if len(pair) != 2 or not all(pair):
+            raise ValueError(
+                f"skeleton edge {token!r} must be two bodyparts separated by a comma, e.g. snout,tailbase"
+            )
+        undeclared = [part for part in pair if part not in known]
+        if undeclared:
+            raise ValueError(f"skeleton edge {token!r} names undeclared bodypart(s): {', '.join(undeclared)}")
+        edges.append(pair)
+    return edges
+
+
+def cmd_create(args) -> int:
+    if args.individuals and not args.multi_animal:
+        print("--individuals requires --multi-animal")
+        return 2
+    try:
+        skeleton = _parse_skeleton(args.skeleton, args.bodyparts, args.unique_bodyparts)
+        project = Project.create(
+            args.root,
+            task=args.task,
+            bodyparts=args.bodyparts,
+            experimenters=args.experimenters,
+            multi_animal=args.multi_animal,
+            individuals=args.individuals,
+            unique_bodyparts=args.unique_bodyparts,
+            skeleton=skeleton,
+            exist_ok=args.exist_ok,
+        )
+    except (FileExistsError, ValueError) as err:  # bad input -> a message, not a traceback
+        print(err)
+        return 2
+    config = project.config
+    print(f"created -> {project.root}")
+    print(f"  task: {config.task}  bodyparts: {len(config.bodyparts)}  skeleton: {len(config.skeleton)} edge(s)")
+    if config.multi_animal:
+        print(f"  individuals: {', '.join(config.individuals) or '-'}")
+    return 0
 
 
 def cmd_migrate(args) -> int:
@@ -227,6 +289,22 @@ def cmd_evaluate(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="dlc-ws", description="FreeDLC workspace CLI")
     sub = parser.add_subparsers(dest="command")
+
+    p = sub.add_parser("create", help="create a new workspace project")
+    p.add_argument("root", help="directory to create the project in")
+    p.add_argument("--task", required=True, help="experiment name recorded in project.toml")
+    p.add_argument("--bodyparts", nargs="+", required=True, metavar="NAME", help="keypoint names to track")
+    p.add_argument("--experimenters", nargs="+", default=[], metavar="NAME")
+    p.add_argument("--multi-animal", action="store_true", dest="multi_animal")
+    p.add_argument("--individuals", nargs="+", default=[], metavar="NAME",
+                   help="animal names (requires --multi-animal)")
+    p.add_argument("--unique-bodyparts", nargs="+", default=[], dest="unique_bodyparts", metavar="NAME",
+                   help="landmarks that do not belong to an individual (e.g. arena corners)")
+    p.add_argument("--skeleton", action="extend", nargs="+", default=[], metavar="A,B",
+                   help="skeleton edges as comma-separated bodypart pairs, e.g. --skeleton snout,tailbase")
+    p.add_argument("--exist-ok", action="store_true", dest="exist_ok",
+                   help="overwrite an existing project.toml instead of failing (sources/ and runs/ are untouched)")
+    p.set_defaults(func=cmd_create)
 
     p = sub.add_parser("migrate", help="migrate a legacy DeepLabCut project")
     p.add_argument("legacy_root")

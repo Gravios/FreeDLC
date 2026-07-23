@@ -58,6 +58,98 @@ def _model_project(root: Path):
 
 
 # --------------------------------------------------------- no-torch commands
+def test_create_command():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d) / "ws"
+        code, out = _run(["create", str(root), "--task", "reach",
+                          "--bodyparts", "snout", "paw", "--experimenters", "gravio"])
+        assert code == 0 and "created ->" in out
+        assert "bodyparts: 2" in out and "skeleton: 0 edge(s)" in out
+        proj = ws.Project.open(root)
+        assert proj.config.task == "reach"
+        assert proj.config.bodyparts == ["snout", "paw"]
+        assert proj.config.experimenters == ["gravio"]
+        assert not proj.config.multi_animal
+        for rel in ("sources/videos", "sources/annotations", "models", "runs", "derived"):
+            assert (root / rel).is_dir()          # full skeleton, not just project.toml
+
+
+def test_create_with_skeleton():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d) / "ws"
+        # edges accepted both as several values to one flag and as a repeated flag
+        code, out = _run(["create", str(root), "--task", "reach",
+                          "--bodyparts", "snout", "paw", "tailbase",
+                          "--skeleton", "snout,paw", "paw,tailbase",
+                          "--skeleton", "snout,tailbase"])
+        assert code == 0 and "skeleton: 3 edge(s)" in out
+        assert ws.Project.open(root).config.skeleton == [
+            ["snout", "paw"], ["paw", "tailbase"], ["snout", "tailbase"],
+        ]
+
+
+def test_create_skeleton_may_reference_unique_bodyparts():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d) / "ws"
+        code, _ = _run(["create", str(root), "--task", "reach", "--bodyparts", "snout", "paw",
+                        "--unique-bodyparts", "corner1", "--skeleton", "snout,corner1"])
+        assert code == 0
+        assert ws.Project.open(root).config.skeleton == [["snout", "corner1"]]
+
+
+def test_create_rejects_undeclared_skeleton_bodypart():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d) / "ws"
+        code, out = _run(["create", str(root), "--task", "reach", "--bodyparts", "snout", "paw",
+                          "--skeleton", "snout,tialbase"])
+        assert code == 2 and "undeclared bodypart(s): tialbase" in out
+        assert not (root / "project.toml").exists()   # nothing written on a rejected edge
+
+
+def test_create_rejects_malformed_skeleton_edge():
+    with tempfile.TemporaryDirectory() as d:
+        for token in ("snout", "snout,paw,tailbase", "snout,"):
+            code, out = _run(["create", str(Path(d) / token.replace(",", "_")), "--task", "reach",
+                              "--bodyparts", "snout", "paw", "tailbase", "--skeleton", token])
+            assert code == 2 and "separated by a comma" in out
+
+
+def test_create_rejects_duplicate_bodyparts():
+    with tempfile.TemporaryDirectory() as d:
+        code, out = _run(["create", str(Path(d) / "ws"), "--task", "reach",
+                          "--bodyparts", "snout", "snout"])
+        assert code == 2 and "duplicates" in out       # ProjectConfig's error, not a traceback
+
+
+def test_create_individuals_require_multi_animal():
+    with tempfile.TemporaryDirectory() as d:
+        code, out = _run(["create", str(Path(d) / "ws"), "--task", "reach",
+                          "--bodyparts", "snout", "--individuals", "mouse1"])
+        assert code == 2 and "--individuals requires --multi-animal" in out
+
+
+def test_create_multi_animal():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d) / "ws"
+        code, out = _run(["create", str(root), "--task", "reach", "--bodyparts", "snout", "paw",
+                          "--multi-animal", "--individuals", "mouse1", "mouse2"])
+        assert code == 0 and "individuals: mouse1, mouse2" in out
+        cfg = ws.Project.open(root).config
+        assert cfg.multi_animal and cfg.individuals == ["mouse1", "mouse2"]
+
+
+def test_create_existing_project():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d) / "ws"
+        base = ["create", str(root), "--task", "reach", "--bodyparts", "snout", "paw"]
+        assert _run(base)[0] == 0
+        code, out = _run(base)
+        assert code == 2 and "already exists" in out
+        # --exist-ok rewrites project.toml in place
+        code, _ = _run(["create", str(root), "--task", "grasp", "--bodyparts", "snout", "--exist-ok"])
+        assert code == 0 and ws.Project.open(root).config.task == "grasp"
+
+
 def test_migrate_command():
     with tempfile.TemporaryDirectory() as d:
         legacy = _legacy_project(Path(d))
