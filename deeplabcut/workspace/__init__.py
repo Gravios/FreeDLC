@@ -65,9 +65,13 @@ from .schema import (
     RunManifest,
     VideoRecord,
 )
+from .skeleton_lib import available_skeletons, load_skeleton, resolve_skeleton
 from .train import TrainBackend, TrainConfig, WorkspaceTrainBackend, train_model
 
 __all__ = [
+    "available_skeletons",
+    "load_skeleton",
+    "resolve_skeleton",
     "ids",
     "Layout",
     "Project",

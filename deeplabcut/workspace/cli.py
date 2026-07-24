@@ -3,10 +3,11 @@
 #
 """``dlc-ws`` -- a command-line interface over the workspace.
 
-Thin wrappers around the workspace API: ``create``, ``migrate``, ``info``,
-``models``, ``videos``, ``apply``, ``label``, ``track``, ``export``, ``train``,
-``evaluate``. Uses only argparse (no extra dependencies), and each handler calls a
-single workspace function, so parsing and dispatch are testable without torch; the
+Thin wrappers around the workspace API: ``create``, ``list``,
+``export-skeleton``, ``migrate``, ``info``, ``models``, ``videos``, ``apply``,
+``label``, ``track``, ``export``, ``train``, ``evaluate``. Uses only argparse (no
+extra dependencies), and each handler calls a single workspace function, so
+parsing and dispatch are testable without torch; the
 torch-backed commands (apply/train/evaluate) simply call their (lazily
 torch-importing) workspace functions.
 
@@ -20,6 +21,7 @@ import json
 import sys
 from pathlib import Path
 
+from . import skeleton_lib
 from .apply import (
     apply_to_videos,
     beside_video_path,
@@ -71,12 +73,24 @@ def cmd_create(args) -> int:
     if args.individuals and not args.multi_animal:
         print("--individuals requires --multi-animal")
         return 2
+    if args.skeleton_config and (args.bodyparts or args.skeleton):
+        print("--skeleton-config supplies the markers and edges; drop --bodyparts / --skeleton")
+        return 2
+    if not args.skeleton_config and not args.bodyparts:
+        print("one of --bodyparts or --skeleton-config is required")
+        return 2
     try:
-        skeleton = _parse_skeleton(args.skeleton, args.bodyparts, args.unique_bodyparts)
+        if args.skeleton_config:
+            rig = skeleton_lib.resolve_skeleton(args.skeleton_config)
+            bodyparts = [str(b) for b in rig["body_parts"]]
+            skeleton = [list(edge) for edge in (rig.get("skeleton") or {}).get("edges") or []]
+        else:
+            bodyparts = args.bodyparts
+            skeleton = _parse_skeleton(args.skeleton, args.bodyparts, args.unique_bodyparts)
         project = Project.create(
             args.root,
             task=args.task,
-            bodyparts=args.bodyparts,
+            bodyparts=bodyparts,
             experimenters=args.experimenters,
             multi_animal=args.multi_animal,
             individuals=args.individuals,
@@ -84,14 +98,76 @@ def cmd_create(args) -> int:
             skeleton=skeleton,
             exist_ok=args.exist_ok,
         )
-    except (FileExistsError, ValueError) as err:  # bad input -> a message, not a traceback
+    except (FileExistsError, FileNotFoundError, ValueError) as err:  # bad input -> a message, not a traceback
         print(err)
         return 2
     config = project.config
     print(f"created -> {project.root}")
     print(f"  task: {config.task}  bodyparts: {len(config.bodyparts)}  skeleton: {len(config.skeleton)} edge(s)")
+    if args.skeleton_config:
+        print(f"  skeleton config: {rig.get('name') or args.skeleton_config}")
     if config.multi_animal:
         print(f"  individuals: {', '.join(config.individuals) or '-'}")
+    return 0
+
+
+def cmd_list_skeletons(args) -> int:
+    if not args.name:
+        names = skeleton_lib.available_skeletons()
+        print("\n".join(names) if names else "no skeleton configs bundled")
+        return 0
+    try:
+        config = skeleton_lib.load_skeleton(args.name)
+    except (FileNotFoundError, ValueError) as err:
+        print(err)
+        return 2
+    pose = config.get("pose") or {}
+    segments = pose.get("segments") or []
+    edges = (config.get("skeleton") or {}).get("edges") or []
+    print(f"{config['name']} -- {config.get('description', '')}")
+    print(f"  markers: {len(config['body_parts'])}  edges: {len(edges)}  segments: {len(segments)}")
+    if segments:
+        print(f"  root: {(pose.get('kinematics') or {}).get('root') or '-'}")
+        for segment in segments:
+            parent = segment.get("parent") or "-"
+            print(f"    {segment['name']:<10} parent={parent:<10} {', '.join(segment['markers'])}")
+    return 0
+
+
+def cmd_export_skeleton(args) -> int:
+    try:
+        project = Project.open(args.project)
+    except (FileNotFoundError, ValueError) as err:
+        print(err)
+        return 2
+    if not project.config.skeleton:
+        print(f"project has no skeleton edges to export: {project.layout.project_toml}")
+        return 2
+    segments_from = None
+    try:
+        if args.segments_from:
+            segments_from = skeleton_lib.load_skeleton(args.segments_from)
+        elif not args.no_segments:
+            # A project created from a library rig exports back as a complete one.
+            segments_from = skeleton_lib.matching_library_config(
+                project.config.bodyparts, project.config.skeleton
+            )
+        config = skeleton_lib.config_from_project(
+            project,
+            name=args.name or project.config.task,
+            description=args.description,
+            segments_from=segments_from,
+        )
+        path = skeleton_lib.write_config(config, args.out)
+    except (FileNotFoundError, ValueError, OSError) as err:
+        print(err)
+        return 2
+    n_segments = len((config.get("pose") or {}).get("segments") or [])
+    print(f"exported -> {path}")
+    print(f"  markers: {len(config['body_parts'])}  edges: {len(config['skeleton']['edges'])}  "
+          f"segments: {n_segments}")
+    if not n_segments:
+        print("  no kinematic tree: add [[pose.segments]] by hand, or re-run with --segments-from NAME")
     return 0
 
 
@@ -293,7 +369,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("create", help="create a new workspace project")
     p.add_argument("root", help="directory to create the project in")
     p.add_argument("--task", required=True, help="experiment name recorded in project.toml")
-    p.add_argument("--bodyparts", nargs="+", required=True, metavar="NAME", help="keypoint names to track")
+    p.add_argument("--bodyparts", nargs="+", default=[], metavar="NAME",
+                   help="keypoint names to track (or use --skeleton-config)")
+    p.add_argument("--skeleton-config", dest="skeleton_config", metavar="NAME",
+                   help="take the markers and edges from an installed skeleton config, or a path to one "
+                        "(see: dlc-ws list skeletons)")
     p.add_argument("--experimenters", nargs="+", default=[], metavar="NAME")
     p.add_argument("--multi-animal", action="store_true", dest="multi_animal")
     p.add_argument("--individuals", nargs="+", default=[], metavar="NAME",
@@ -305,6 +385,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--exist-ok", action="store_true", dest="exist_ok",
                    help="overwrite an existing project.toml instead of failing (sources/ and runs/ are untouched)")
     p.set_defaults(func=cmd_create)
+
+    p = sub.add_parser("list", help="list saved configurations")
+    listed = p.add_subparsers(dest="what", metavar="{skeletons}", required=True)
+    q = listed.add_parser("skeletons", help="list the installed skeleton configs, or show one")
+    q.add_argument("name", nargs="?", help="skeleton config to describe (default: list every name)")
+    q.set_defaults(func=cmd_list_skeletons)
+
+    p = sub.add_parser("export-skeleton", help="export a project's skeleton as a named config")
+    p.add_argument("project", help="workspace project root")
+    p.add_argument("--name", help="config name (default: the project's task)")
+    p.add_argument("--out", default=".fdlc/skeletons", help="output directory (default: .fdlc/skeletons)")
+    p.add_argument("--description", default="", help="description recorded in the config")
+    p.add_argument("--segments-from", dest="segments_from", metavar="NAME",
+                   help="copy the kinematic tree from this bundled config")
+    p.add_argument("--no-segments", action="store_true", dest="no_segments",
+                   help="write the graph only, without looking for a matching library tree")
+    p.set_defaults(func=cmd_export_skeleton)
 
     p = sub.add_parser("migrate", help="migrate a legacy DeepLabCut project")
     p.add_argument("legacy_root")

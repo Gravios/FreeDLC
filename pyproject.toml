@@ -120,7 +120,7 @@ dev = [
 [tool.setuptools]
 include-package-data = false
 [tool.setuptools.package-data]
-"*" = [ "*.yaml", "*.yml", "*.json", "*.qss", "*.png", "*.md", "*.sh" ]
+"*" = [ "*.yaml", "*.yml", "*.json", "*.qss", "*.png", "*.md", "*.sh", "*.toml" ]
 [tool.setuptools.packages.find]
 include = [ "deeplabcut*" ]
 exclude = [ "tests*", "docs*", "examples*" ]

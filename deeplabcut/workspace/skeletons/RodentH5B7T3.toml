@@ -1,0 +1,95 @@
+# RodentH5B7T3 -- rodent rig, 5 head + 7 back/hip + 3 tail markers.
+#
+# Table and key names deliberately mirror a mufasa project.toml, so this file is
+# a drop-in fragment: `[skeleton]`, `[[pose.segments]]` and `[pose.kinematics]`
+# are read by mufasa's kalman_pose_smoother_v2.layout_from_config() as-is.
+#
+# The skeleton graph has 24 edges over 15 nodes -- 10 more than a spanning tree.
+# mufasa can derive a tree from those edges alone, but the breadth-first spanning
+# tree it picks is anatomically wrong (it roots at head_back and hangs back_L2 off
+# hip_left, giving 15 single-marker segments and no rigid trunk). The explicit
+# [[pose.segments]] below is what makes the rig correct, so keep both in sync.
+
+name = "RodentH5B7T3"
+description = "Rodent rig: 5 head, 5 back + 2 hip, 3 tail markers (15 total)."
+schema_version = 1
+
+body_parts = [
+    "head_nose", "head_mid", "head_left", "head_right", "head_back",
+    "back_T4", "back_T8", "back_L2", "back_L6", "back_V2",
+    "hip_left", "hip_right",
+    "tail_V6", "tail_V18", "tail_V32",
+]
+
+[pose.kinematics]
+root = "back"
+
+# Rigid trunk cluster. First marker is the segment's distal end; the rest are
+# rigid attachments whose offsets mufasa fits from data.
+[[pose.segments]]
+name = "back"
+markers = ["back_T8", "back_T4", "back_L6", "back_L2", "hip_left", "hip_right"]
+
+[[pose.segments]]
+name = "back_rear"
+parent = "back"
+markers = ["back_V2"]
+
+[[pose.segments]]
+name = "neck"
+parent = "back"
+markers = ["head_back"]
+
+[[pose.segments]]
+name = "head"
+parent = "neck"
+markers = ["head_mid", "head_nose", "head_left", "head_right"]
+
+[[pose.segments]]
+name = "tail_1"
+parent = "back_rear"
+markers = ["tail_V6"]
+
+[[pose.segments]]
+name = "tail_2"
+parent = "tail_1"
+markers = ["tail_V18"]
+
+[[pose.segments]]
+name = "tail_3"
+parent = "tail_2"
+markers = ["tail_V32"]
+
+[skeleton]
+nodes = [
+    "head_nose", "head_mid", "head_left", "head_right", "head_back",
+    "back_T4", "back_T8", "back_L2", "back_L6", "back_V2",
+    "hip_left", "hip_right",
+    "tail_V6", "tail_V18", "tail_V32",
+]
+edges = [
+    ["head_nose", "head_mid"],
+    ["head_mid", "head_left"],
+    ["head_mid", "head_right"],
+    ["head_left", "head_right"],
+    ["head_left", "head_back"],
+    ["head_right", "head_back"],
+    ["head_mid", "head_back"],
+    ["head_back", "back_T4"],
+    ["back_T4", "back_T8"],
+    ["back_T8", "back_L2"],
+    ["back_L2", "hip_left"],
+    ["back_L2", "hip_right"],
+    ["hip_left", "hip_right"],
+    ["head_back", "hip_left"],
+    ["head_back", "hip_right"],
+    ["back_L2", "back_L6"],
+    ["back_L6", "back_V2"],
+    ["back_V2", "tail_V6"],
+    ["tail_V6", "hip_left"],
+    ["tail_V6", "hip_right"],
+    ["tail_V6", "tail_V18"],
+    ["tail_V18", "tail_V32"],
+    ["head_back", "tail_V6"],
+    ["head_mid", "tail_V6"],
+]
