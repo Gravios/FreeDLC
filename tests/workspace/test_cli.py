@@ -379,6 +379,130 @@ def test_export_check_dispatch(monkeypatch):
         assert code == 1 and "PARITY: FAIL" in out
 
 
+# --------------------------------------------------------------- add-video
+def _make_videos(root: Path, names) -> list[Path]:
+    root.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for n in names:
+        p = root / n
+        p.write_bytes(b"fake video")
+        paths.append(p)
+    return paths
+
+
+def test_add_single_video():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        ws.Project.create(d / "ws", task="reach", bodyparts=["snout"])
+        (vid,) = _make_videos(d / "raw", ["Session 01.mp4"])
+        code, out = _run(["add-video", str(d / "ws"), str(vid)])
+        assert code == 0, out
+        assert "added 1 video(s)" in out and "session-01" in out
+        assert ws.Project.open(d / "ws").videos() == ["session-01"]
+
+
+def test_add_video_directory():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        ws.Project.create(d / "ws", task="reach", bodyparts=["snout"])
+        _make_videos(d / "raw", ["a.mp4", "b.avi", "c.mov", "notes.txt"])
+        code, out = _run(["add-video", str(d / "ws"), str(d / "raw")])
+        assert code == 0, out
+        assert "added 3 video(s)" in out                # the .txt is ignored
+        assert ws.Project.open(d / "ws").videos() == ["a", "b", "c"]
+
+
+def test_add_video_default_link_is_symlink():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        proj = ws.Project.create(d / "ws", task="reach", bodyparts=["snout"])
+        (vid,) = _make_videos(d / "raw", ["clip.mp4"])
+        assert _run(["add-video", str(d / "ws"), str(vid)])[0] == 0
+        media = proj.layout.video_media("clip", ".mp4")
+        assert media.is_symlink() and media.resolve() == vid.resolve()
+
+
+def test_add_video_copy_link():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        proj = ws.Project.create(d / "ws", task="reach", bodyparts=["snout"])
+        (vid,) = _make_videos(d / "raw", ["clip.mp4"])
+        assert _run(["add-video", str(d / "ws"), str(vid), "--link", "copy"])[0] == 0
+        media = proj.layout.video_media("clip", ".mp4")
+        assert media.is_file() and not media.is_symlink()
+
+
+def test_add_video_rejects_slug_collision_within_batch():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        ws.Project.create(d / "ws", task="reach", bodyparts=["snout"])
+        # 'clip.mp4' and 'clip.avi' both slugify to 'clip'
+        _make_videos(d / "raw", ["clip.mp4", "clip.avi"])
+        code, out = _run(["add-video", str(d / "ws"), str(d / "raw")])
+        assert code == 2 and "conflicting video ids" in out and "also derived from" in out
+        assert ws.Project.open(d / "ws").videos() == []      # nothing added on conflict
+
+
+def test_add_video_rejects_collision_across_folders():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        ws.Project.create(d / "ws", task="reach", bodyparts=["snout"])
+        (a,) = _make_videos(d / "one", ["clip.mp4"])
+        (b,) = _make_videos(d / "two", ["clip.mp4"])
+        code, out = _run(["add-video", str(d / "ws"), str(a), str(b)])
+        assert code == 2 and "also derived from" in out
+        assert ws.Project.open(d / "ws").videos() == []
+
+
+def test_add_video_rejects_id_already_registered():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        ws.Project.create(d / "ws", task="reach", bodyparts=["snout"])
+        (vid,) = _make_videos(d / "raw", ["clip.mp4"])
+        assert _run(["add-video", str(d / "ws"), str(vid)])[0] == 0
+        code, out = _run(["add-video", str(d / "ws"), str(vid)])
+        assert code == 2 and "already registered" in out
+
+
+def test_add_video_exist_ok_re_registers():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        ws.Project.create(d / "ws", task="reach", bodyparts=["snout"])
+        (vid,) = _make_videos(d / "raw", ["clip.mp4"])
+        assert _run(["add-video", str(d / "ws"), str(vid)])[0] == 0
+        code, out = _run(["add-video", str(d / "ws"), str(vid), "--exist-ok"])
+        assert code == 0 and "added 1 video(s)" in out
+
+
+def test_add_video_explicit_id_single():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        ws.Project.create(d / "ws", task="reach", bodyparts=["snout"])
+        (vid,) = _make_videos(d / "raw", ["Session 01.mp4"])
+        code, out = _run(["add-video", str(d / "ws"), str(vid), "--video-id", "trial-a"])
+        assert code == 0 and "trial-a" in out
+        assert ws.Project.open(d / "ws").videos() == ["trial-a"]
+
+
+def test_add_video_id_rejected_for_multiple():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        ws.Project.create(d / "ws", task="reach", bodyparts=["snout"])
+        _make_videos(d / "raw", ["a.mp4", "b.mp4"])
+        code, out = _run(["add-video", str(d / "ws"), str(d / "raw"), "--video-id", "x"])
+        assert code == 2 and "single video" in out
+        assert ws.Project.open(d / "ws").videos() == []
+
+
+def test_add_video_no_videos_found():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        ws.Project.create(d / "ws", task="reach", bodyparts=["snout"])
+        (d / "empty").mkdir()
+        code, out = _run(["add-video", str(d / "ws"), str(d / "empty")])
+        assert code == 2 and "no video files found" in out
+
+
 def _run_smoke() -> int:
     class _MP:
         def setattr(self, obj, name, val):

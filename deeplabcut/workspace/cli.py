@@ -4,7 +4,8 @@
 """``dlc-ws`` -- a command-line interface over the workspace.
 
 Thin wrappers around the workspace API: ``create``, ``list``,
-``export-skeleton``, ``migrate``, ``info``, ``models``, ``videos``, ``apply``,
+``export-skeleton``, ``migrate``, ``info``, ``models``, ``add-video``, ``videos``,
+``apply``,
 ``label``, ``track``, ``export``, ``train``, ``evaluate``. Uses only argparse (no
 extra dependencies), and each handler calls a single workspace function, so
 parsing and dispatch are testable without torch; the
@@ -218,6 +219,67 @@ def cmd_models(args) -> int:
     return 0
 
 
+def cmd_add_video(args) -> int:
+    from . import ids
+
+    try:
+        project = Project.open(args.project)
+    except (FileNotFoundError, ValueError) as err:
+        print(err)
+        return 2
+
+    videos = collect_videos(args.videos)
+    if not videos:
+        print("no video files found in the given paths")
+        return 2
+
+    # Resolve every id first and reject the whole batch on any conflict, so a
+    # directory with a name clash never leaves the project half-updated. Two
+    # sources collide when their slugified stems match (foo.mp4 and foo.avi, or
+    # two 'foo' in different folders) -- the second would overwrite the first.
+    existing = set(project.videos())
+    planned: dict[str, Path] = {}
+    conflicts: list[str] = []
+    for video in videos:
+        try:
+            vid = ids.video_id_from_path(video)
+        except ValueError as err:                     # stem with no slug-able characters
+            print(err)
+            return 2
+        if vid in existing and not args.exist_ok:
+            conflicts.append(f"{video}: id {vid!r} already registered")
+        elif vid in planned:
+            conflicts.append(f"{video}: id {vid!r} also derived from {planned[vid]}")
+        else:
+            planned[vid] = video
+    if conflicts:
+        print(f"conflicting video ids ({len(conflicts)}); nothing was added:")
+        for line in conflicts:
+            print(f"  {line}")
+        print("give a distinct --video-id (single file), or rename the sources")
+        return 2
+
+    if args.video_id:
+        if len(planned) != 1:
+            print("--video-id can only be used when adding a single video")
+            return 2
+        planned = {args.video_id: next(iter(planned.values()))}
+
+    added = 0
+    for vid, video in planned.items():
+        try:
+            written = project.add_video(
+                video, video_id=vid, link=args.link, hash=args.hash, exist_ok=args.exist_ok
+            )
+        except (FileNotFoundError, ValueError, FileExistsError, OSError) as err:
+            print(f"{video}: {err}")
+            return 2
+        print(f"  {written} <- {video}")
+        added += 1
+    print(f"added {added} video(s) to {project.root} ({args.link})")
+    return 0
+
+
 def cmd_videos(args) -> int:
     project = Project.open(args.project)
     annotated = set(project.annotated_videos())
@@ -419,6 +481,18 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("models", help="list model bundles")
     p.add_argument("project")
     p.set_defaults(func=cmd_models)
+
+    p = sub.add_parser("add-video", help="register one or more source videos (files, folders, or globs)")
+    p.add_argument("project")
+    p.add_argument("videos", nargs="+", help="video files, directories, or glob patterns")
+    p.add_argument("--link", choices=["symlink", "copy", "reference"], default="symlink",
+                   help="how to materialize media: symlink (default), copy, or reference (record path only)")
+    p.add_argument("--video-id", dest="video_id", metavar="ID",
+                   help="explicit id (single video only; default: the slugified filename)")
+    p.add_argument("--hash", action="store_true", help="also record each source's SHA-256 (streams the file)")
+    p.add_argument("--exist-ok", action="store_true", dest="exist_ok",
+                   help="re-register videos whose id already exists instead of failing")
+    p.set_defaults(func=cmd_add_video)
 
     p = sub.add_parser("videos", help="list registered videos")
     p.add_argument("project")
