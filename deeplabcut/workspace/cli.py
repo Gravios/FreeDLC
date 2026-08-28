@@ -5,7 +5,7 @@
 
 Thin wrappers around the workspace API: ``create``, ``list``,
 ``export-skeleton``, ``migrate``, ``info``, ``models``, ``add-video``, ``videos``,
-``apply``,
+``extract-frames``, ``annotate``, ``apply``,
 ``label``, ``track``, ``export``, ``train``, ``evaluate``. Uses only argparse (no
 extra dependencies), and each handler calls a single workspace function, so
 parsing and dispatch are testable without torch; the
@@ -169,6 +169,53 @@ def cmd_export_skeleton(args) -> int:
           f"segments: {n_segments}")
     if not n_segments:
         print("  no kinematic tree: add [[pose.segments]] by hand, or re-run with --segments-from NAME")
+    return 0
+
+
+def _open_project(project_arg: str):
+    root = Path(project_arg)
+    if root.name == "project.toml":
+        root = root.parent
+    return Project.open(root)
+
+
+def cmd_extract_frames(args) -> int:
+    from .annotate import resolve_video_id
+    from .frames import extract_frames
+
+    try:
+        project = _open_project(args.project)
+        video_id = resolve_video_id(project, args.video)
+        written = extract_frames(project, video_id, n=args.n, mode=args.mode, overwrite=args.overwrite)
+    except (FileNotFoundError, ValueError, OSError) as err:
+        print(err)
+        return 2
+    print(f"extracted {len(written)} frame(s) -> {project.layout.frames_dir(video_id)}")
+    print(f"  video: {video_id}  mode: {args.mode}")
+    return 0
+
+
+def cmd_annotate(args) -> int:
+    try:
+        project = _open_project(args.project)
+    except (FileNotFoundError, ValueError) as err:
+        print(err)
+        return 2
+    from .annotate import annotate_video
+
+    try:
+        video_id = annotate_video(project, args.video, n=args.n, mode=args.mode)
+    except (FileNotFoundError, ValueError, OSError) as err:
+        print(err)
+        return 2
+    except ImportError:
+        print("napari is required to annotate; install the annotator: pip install napari-deeplabcut")
+        return 2
+    labels = project.layout.labels_parquet(video_id)
+    if labels.is_file():
+        print(f"annotated {video_id} -> {labels}")
+    else:
+        print(f"annotator closed for {video_id}; no labels were saved")
     return 0
 
 
@@ -493,6 +540,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--exist-ok", action="store_true", dest="exist_ok",
                    help="re-register videos whose id already exists instead of failing")
     p.set_defaults(func=cmd_add_video)
+
+    p = sub.add_parser("extract-frames", help="extract annotation frames from a registered video")
+    p.add_argument("video", help="registered video id, or a path whose name matches one")
+    p.add_argument("--project", default=".", help="project root or project.toml (default: current directory)")
+    p.add_argument("-n", type=int, default=20, dest="n", help="number of frames to extract (default: 20)")
+    p.add_argument("--mode", choices=("uniform", "kmeans"), default="uniform",
+                   help="uniform (evenly spaced) or kmeans (content-clustered)")
+    p.add_argument("--overwrite", action="store_true", help="re-extract even if frames already exist")
+    p.set_defaults(func=cmd_extract_frames)
+
+    p = sub.add_parser("annotate", help="open the napari annotator on a video (extracts frames if needed)")
+    p.add_argument("video", help="registered video id, or a path whose name matches one")
+    p.add_argument("--project", default=".", help="project root or project.toml (default: current directory)")
+    p.add_argument("-n", type=int, default=20, dest="n", help="frames to extract if none exist yet (default: 20)")
+    p.add_argument("--mode", choices=("uniform", "kmeans"), default="uniform",
+                   help="frame-selection mode when extracting (default: uniform)")
+    p.set_defaults(func=cmd_annotate)
 
     p = sub.add_parser("videos", help="list registered videos")
     p.add_argument("project")
