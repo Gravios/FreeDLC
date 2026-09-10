@@ -284,7 +284,7 @@ def cmd_add_video(args) -> int:
     # directory with a name clash never leaves the project half-updated. Two
     # sources collide when their slugified stems match (foo.mp4 and foo.avi, or
     # two 'foo' in different folders) -- the second would overwrite the first.
-    existing = set(project.videos())
+    existing = set(project.videos(args.kind))
     planned: dict[str, Path] = {}
     conflicts: list[str] = []
     for video in videos:
@@ -316,14 +316,15 @@ def cmd_add_video(args) -> int:
     for vid, video in planned.items():
         try:
             written = project.add_video(
-                video, video_id=vid, link=args.link, hash=args.hash, exist_ok=args.exist_ok
+                video, video_id=vid, kind=args.kind, link=args.link,
+                hash=args.hash, exist_ok=args.exist_ok
             )
         except (FileNotFoundError, ValueError, FileExistsError, OSError) as err:
             print(f"{video}: {err}")
             return 2
         print(f"  {written} <- {video}")
         added += 1
-    print(f"added {added} video(s) to {project.root} ({args.link})")
+    print(f"added {added} {args.kind} video(s) to {project.root} ({args.link})")
     return 0
 
 
@@ -537,6 +538,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--video-id", dest="video_id", metavar="ID",
                    help="explicit id (single video only; default: the slugified filename)")
     p.add_argument("--hash", action="store_true", help="also record each source's SHA-256 (streams the file)")
+    p.add_argument("--processed", dest="kind", action="store_const", const="processed", default="original",
+                   help="register under the processed (downscaled) shelf instead of original")
     p.add_argument("--exist-ok", action="store_true", dest="exist_ok",
                    help="re-register videos whose id already exists instead of failing")
     p.set_defaults(func=cmd_add_video)

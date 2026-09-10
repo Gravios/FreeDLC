@@ -144,6 +144,14 @@ def annotate_video(
 ) -> str:
     """Extract-if-needed, launch napari to annotate ``video``, and ingest labels on close.
 
+    Frames are staged from the *original* video so markers are placed on full-resolution
+    images. napari saves a CollectedData in that original pixel space (a self-consistent
+    legacy artifact). On close it is ingested into ``sources/annotations/<id>/labels.parquet``
+    with coordinates scaled to the *processed* space -- the space the model trains on --
+    using the project's per-video ``(scale_x, scale_y)``. The scale transform lives here,
+    not in napari: napari shows original frames, so writing processed coordinates into a
+    CollectedData that references those frames would make it internally inconsistent.
+
     ``_launch`` is injected so the orchestration can be tested without Qt. Returns the
     resolved ``video_id``.
     """
@@ -154,12 +162,18 @@ def annotate_video(
 
     _launch(config_path, dataset_dir)
 
-    # napari has closed: pull whatever labels were saved into the workspace.
+    # napari has closed: pull whatever labels were saved into the workspace,
+    # scaling original-space coordinates into processed space on the way in.
     collected = find_collected_data(dataset_dir)
     if collected is None:
         log.info("no CollectedData written for %s; nothing to ingest", video_id)
         return video_id
-    long, copied = ingest_video_annotations(project, video_id, collected, dataset_dir, link=link)
+    scale_x, scale_y = project.annotation_scale(video_id)
+    long, copied = ingest_video_annotations(
+        project, video_id, collected, dataset_dir, link=link, scale=(scale_x, scale_y)
+    )
     n_images = len(dict.fromkeys(long["image"].tolist()))
-    log.info("ingested %d annotated frame(s) -> %s", n_images, project.layout.labels_parquet(video_id))
+    space = "processed" if (scale_x, scale_y) != (1.0, 1.0) else "original"
+    log.info("ingested %d annotated frame(s) in %s space -> %s",
+             n_images, space, project.layout.labels_parquet(video_id))
     return video_id

@@ -168,12 +168,24 @@ def ingest_video_annotations(
     *,
     link: str = "symlink",
     write: bool = True,
+    scale: tuple[float, float] = (1.0, 1.0),
 ):
     """Ingest one video's annotations: write ``labels.parquet`` + copy frames.
+
+    ``scale`` multiplies ``(x, y)`` before writing, mapping annotation coordinates
+    from the frames they were placed on into another pixel space -- used to convert
+    labels made on original-resolution frames into the processed space the model
+    trains on. It defaults to ``(1.0, 1.0)`` (identity), so callers that annotate and
+    train in the same space are unaffected.
 
     Returns ``(long_df, n_frames_materialized)``.
     """
     long = collected_data_to_long_df(read_collected_data(collected_data))
+    scale_x, scale_y = scale
+    if (scale_x, scale_y) != (1.0, 1.0):
+        long = long.copy()
+        long["x"] = long["x"] * scale_x
+        long["y"] = long["y"] * scale_y
     images = list(dict.fromkeys(long["image"].tolist()))
     copied = copy_frames(frames_dir, project.layout.frames_dir(video_id), images, link=link)
     if write:

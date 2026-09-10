@@ -25,6 +25,29 @@ from .util import code_version, sha256_file
 __all__ = ["Project", "Run"]
 
 
+def _probe_video(path: Path) -> tuple[int | None, int | None, float | None, int | None]:
+    """Return ``(width, height, fps, n_frames)`` for a video, or ``None``s if unprobeable.
+
+    Uses OpenCV when importable. Probing is best-effort: any failure yields all
+    ``None`` rather than raising, so registering a video never depends on a backend.
+    """
+    try:
+        import cv2
+    except ImportError:
+        return (None, None, None, None)
+    cap = cv2.VideoCapture(str(path))
+    try:
+        if not cap.isOpened():
+            return (None, None, None, None)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or None
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or None
+        fps = cap.get(cv2.CAP_PROP_FPS) or None
+        n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or None
+        return (width, height, fps, n_frames)
+    finally:
+        cap.release()
+
+
 class Project:
     """A FreeDLC workspace rooted at a directory."""
 
@@ -98,18 +121,24 @@ class Project:
         path: str | Path,
         *,
         video_id: str | None = None,
+        kind: str = "original",
         link: str = "symlink",
         hash: bool = False,
         exist_ok: bool = False,
     ) -> str:
         """Register a source video and return its ``video_id``.
 
-        The media is materialized under ``sources/videos/<video_id>/`` according
-        to ``link``: ``"symlink"`` (default), ``"copy"``, or ``"reference"`` (record
-        the path only, materialize nothing). A ``video.toml`` provenance record is
-        always written.
+        ``kind`` selects the shelf: ``"original"`` (default) for full-resolution
+        reference footage, or ``"processed"`` for the downscaled video the model
+        trains on. The media is materialized under
+        ``sources/videos/<kind>/<video_id>/`` according to ``link``: ``"symlink"``
+        (default), ``"copy"``, or ``"reference"`` (record the path only). A
+        ``video.toml`` provenance record is always written, with width/height/fps
+        probed when a video backend is available -- these dimensions are what the
+        original/processed scale is later derived from.
 
         Args:
+            kind: which shelf to register under (original | processed).
             link: how to materialize the media (symlink | copy | reference).
             hash: also compute and record the source SHA-256 (streams the file).
         """
@@ -117,12 +146,12 @@ class Project:
         if not src.is_file():
             raise FileNotFoundError(f"video not found: {src}")
         vid = video_id or ids.video_id_from_path(src)
-        if self.has_video(vid) and not exist_ok:
-            raise FileExistsError(f"video id {vid!r} already registered")
+        if self.has_video(vid, kind) and not exist_ok:
+            raise FileExistsError(f"{kind} video id {vid!r} already registered")
 
-        vdir = self.layout.video_dir(vid)
+        vdir = self.layout.video_dir(vid, kind)
         vdir.mkdir(parents=True, exist_ok=True)
-        media = self.layout.video_media(vid, src.suffix or ".mp4")
+        media = self.layout.video_media(vid, src.suffix or ".mp4", kind)
         if link == "symlink":
             if media.exists() or media.is_symlink():
                 media.unlink()
@@ -134,26 +163,49 @@ class Project:
         else:
             raise ValueError(f"link must be symlink|copy|reference, got {link!r}")
 
+        width, height, fps, n_frames = _probe_video(src)
         record = VideoRecord(
             video_id=vid,
             source_path=str(src),
             size_bytes=src.stat().st_size,
             sha256=sha256_file(src) if hash else None,
             link=link,
+            width=width,
+            height=height,
+            fps=fps,
+            n_frames=n_frames,
         )
-        write_manifest(self.layout.video_toml(vid), record.to_dict())
+        write_manifest(self.layout.video_toml(vid, kind), record.to_dict())
         return vid
 
-    def has_video(self, video_id: str) -> bool:
-        return self.layout.video_toml(video_id).exists()
+    def has_video(self, video_id: str, kind: str = "original") -> bool:
+        return self.layout.video_toml(video_id, kind).exists()
 
-    def videos(self) -> list[str]:
-        """All registered video ids, sorted."""
-        d = self.layout.videos_dir
+    def videos(self, kind: str = "original") -> list[str]:
+        """Registered video ids for ``kind`` (default: original), sorted."""
+        d = self.layout.videos_kind_dir(kind)
         return sorted(p.name for p in d.iterdir() if (p / "video.toml").exists()) if d.exists() else []
 
-    def video_record(self, video_id: str) -> VideoRecord:
-        return VideoRecord.from_dict(read_manifest(self.layout.video_toml(video_id)))
+    def video_record(self, video_id: str, kind: str = "original") -> VideoRecord:
+        return VideoRecord.from_dict(read_manifest(self.layout.video_toml(video_id, kind)))
+
+    def annotation_scale(self, video_id: str) -> tuple[float, float]:
+        """Return the ``(scale_x, scale_y)`` mapping original pixels to processed pixels.
+
+        Derived from the two registered videos' dimensions. ``(1.0, 1.0)`` when there
+        is no processed counterpart, or when either video's dimensions are unknown --
+        in both cases annotation coordinates are left in original space.
+
+        The scale is anisotropic on purpose: a 240x136 reduction of 1920x1080 is
+        0.125 in x but ~0.1259 in y, so a single ratio would skew y.
+        """
+        if not (self.has_video(video_id, "original") and self.has_video(video_id, "processed")):
+            return (1.0, 1.0)
+        orig = self.video_record(video_id, "original")
+        proc = self.video_record(video_id, "processed")
+        if not (orig.width and orig.height and proc.width and proc.height):
+            return (1.0, 1.0)
+        return (proc.width / orig.width, proc.height / orig.height)
 
     def annotated_videos(self) -> list[str]:
         """Video ids that have ingested annotations (``labels.parquet``), sorted."""

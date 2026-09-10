@@ -77,7 +77,10 @@ def test_manifest_roundtrip_drops_none():
 def test_layout_paths():
     lay = ws.Layout("/proj")
     assert lay.project_toml == Path("/proj/project.toml")
-    assert lay.video_media("v1") == Path("/proj/sources/videos/v1/video.mp4")
+    assert lay.video_media("v1") == Path("/proj/sources/videos/original/v1/video.mp4")
+    assert lay.video_media("v1", kind="processed") == Path("/proj/sources/videos/processed/v1/video.mp4")
+    assert lay.frames_dir("v1") == Path("/proj/sources/annotations/v1/frames/original")
+    assert lay.frames_dir("v1", "processed") == Path("/proj/sources/annotations/v1/frames/processed")
     assert lay.model_toml("m1") == Path("/proj/models/m1/model.toml")
     assert lay.run_toml("analyze", "r1") == Path("/proj/runs/analyze/r1/run.toml")
     try:

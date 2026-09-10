@@ -70,7 +70,8 @@ def test_create_command():
         assert proj.config.bodyparts == ["snout", "paw"]
         assert proj.config.experimenters == ["gravio"]
         assert not proj.config.multi_animal
-        for rel in ("sources/videos", "sources/annotations", "models", "runs", "derived"):
+        for rel in ("sources/videos/original", "sources/videos/processed",
+                    "sources/annotations", "models", "runs", "derived"):
             assert (root / rel).is_dir()          # full skeleton, not just project.toml
 
 
@@ -397,7 +398,7 @@ def test_add_single_video():
         (vid,) = _make_videos(d / "raw", ["Session 01.mp4"])
         code, out = _run(["add-video", str(d / "ws"), str(vid)])
         assert code == 0, out
-        assert "added 1 video(s)" in out and "session-01" in out
+        assert "added 1 original video(s)" in out and "session-01" in out
         assert ws.Project.open(d / "ws").videos() == ["session-01"]
 
 
@@ -408,7 +409,7 @@ def test_add_video_directory():
         _make_videos(d / "raw", ["a.mp4", "b.avi", "c.mov", "notes.txt"])
         code, out = _run(["add-video", str(d / "ws"), str(d / "raw")])
         assert code == 0, out
-        assert "added 3 video(s)" in out                # the .txt is ignored
+        assert "added 3 original video(s)" in out                # the .txt is ignored
         assert ws.Project.open(d / "ws").videos() == ["a", "b", "c"]
 
 
@@ -471,7 +472,7 @@ def test_add_video_exist_ok_re_registers():
         (vid,) = _make_videos(d / "raw", ["clip.mp4"])
         assert _run(["add-video", str(d / "ws"), str(vid)])[0] == 0
         code, out = _run(["add-video", str(d / "ws"), str(vid), "--exist-ok"])
-        assert code == 0 and "added 1 video(s)" in out
+        assert code == 0 and "added 1 original video(s)" in out
 
 
 def test_add_video_explicit_id_single():

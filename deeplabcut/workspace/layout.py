@@ -40,7 +40,8 @@ class Layout:
     """
 
     #: Top-level directories created for a new project.
-    TOP_LEVEL = ("sources/videos", "sources/annotations", "models", "runs", "derived")
+    TOP_LEVEL = ("sources/videos/original", "sources/videos/processed",
+                 "sources/annotations", "models", "runs", "derived")
 
     def __init__(self, root: str | Path):
         self.root = Path(root)
@@ -54,18 +55,31 @@ class Layout:
         return self.root / "project.toml"
 
     # -- sources: videos --------------------------------------------------
+    #
+    # Videos are split by kind: `original` holds full-resolution reference footage
+    # (what frames are extracted from and annotated on), `processed` holds the
+    # downscaled videos the model trains and runs on. A video id may appear under
+    # both -- a mirrored pair -- and the original/processed resolution difference
+    # is what defines a project's annotation scale.
+    VIDEO_KINDS = ("original", "processed")
+
     @property
     def videos_dir(self) -> Path:
         return self.root / "sources" / "videos"
 
-    def video_dir(self, video_id: str) -> Path:
-        return self.videos_dir / video_id
+    def videos_kind_dir(self, kind: str = "original") -> Path:
+        if kind not in self.VIDEO_KINDS:
+            raise ValueError(f"video kind must be one of {self.VIDEO_KINDS}, got {kind!r}")
+        return self.videos_dir / kind
 
-    def video_media(self, video_id: str, suffix: str = ".mp4") -> Path:
-        return self.video_dir(video_id) / f"video{suffix}"
+    def video_dir(self, video_id: str, kind: str = "original") -> Path:
+        return self.videos_kind_dir(kind) / video_id
 
-    def video_toml(self, video_id: str) -> Path:
-        return self.video_dir(video_id) / "video.toml"
+    def video_media(self, video_id: str, suffix: str = ".mp4", kind: str = "original") -> Path:
+        return self.video_dir(video_id, kind) / f"video{suffix}"
+
+    def video_toml(self, video_id: str, kind: str = "original") -> Path:
+        return self.video_dir(video_id, kind) / "video.toml"
 
     # -- sources: annotations --------------------------------------------
     @property
@@ -75,8 +89,10 @@ class Layout:
     def annotation_dir(self, video_id: str) -> Path:
         return self.annotations_dir / video_id
 
-    def frames_dir(self, video_id: str) -> Path:
-        return self.annotation_dir(video_id) / "frames"
+    def frames_dir(self, video_id: str, kind: str = "original") -> Path:
+        if kind not in self.VIDEO_KINDS:
+            raise ValueError(f"frame kind must be one of {self.VIDEO_KINDS}, got {kind!r}")
+        return self.annotation_dir(video_id) / "frames" / kind
 
     def labels_parquet(self, video_id: str) -> Path:
         return self.annotation_dir(video_id) / "labels.parquet"

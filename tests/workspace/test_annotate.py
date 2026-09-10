@@ -23,15 +23,19 @@ from deeplabcut.workspace import frames as frames_mod
 BODYPARTS = ["snout", "paw"]
 
 
-def _make_video(path: Path, *, n_frames: int = 50, size: int = 32) -> Path:
-    """Write a tiny mp4 whose frames change over time (so kmeans has something to cluster)."""
+def _make_video(path: Path, *, n_frames: int = 50, size=32) -> Path:
+    """Write a tiny mp4 whose frames change over time (so kmeans has something to cluster).
+
+    ``size`` is an int (square) or a ``(width, height)`` tuple.
+    """
     import cv2
 
+    w, h = (size, size) if isinstance(size, int) else size
     path.parent.mkdir(parents=True, exist_ok=True)
-    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 10, (size, size))
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 10, (w, h))
     for i in range(n_frames):
-        frame = np.full((size, size, 3), (i * 5) % 255, dtype=np.uint8)
-        frame[: size // 2, : size // 2] = (255 - (i * 5) % 255)
+        frame = np.full((h, w, 3), (i * 5) % 255, dtype=np.uint8)
+        frame[: h // 2, : w // 2] = (255 - (i * 5) % 255)
         writer.write(frame)
     writer.release()
     return path
@@ -206,6 +210,92 @@ def test_annotate_resolves_via_path_argument():
         returned = ann.annotate_video(proj, "/anywhere/Clip 01.mp4", n=6,
                                       _launch=_fake_napari_that_labels)
         assert returned == vid
+
+
+# ------------------------------------------------ original/processed split + scale
+def _project_with_pair(root: Path, *, orig=(160, 120), proc=(80, 30), n_frames=40):
+    """Project with a mirrored original+processed video at deliberately anisotropic sizes."""
+    proj = Project.create(root / "ws", task="reach", bodyparts=BODYPARTS)
+    o = _make_video(root / "orig" / "Clip 01.mp4", n_frames=n_frames, size=orig)
+    p = _make_video(root / "proc" / "Clip 01.mp4", n_frames=n_frames, size=proc)
+    proj.add_video(o, link="copy")                    # -> original (default)
+    proj.add_video(p, kind="processed", link="copy")
+    return proj, "clip-01"
+
+
+def test_add_video_probes_dimensions():
+    with tempfile.TemporaryDirectory() as d:
+        proj, vid = _project_with_video(Path(d))
+        rec = proj.video_record(vid, "original")
+        assert rec.width and rec.height                   # populated by the cv2 probe
+
+
+def test_original_and_processed_are_separate_shelves():
+    with tempfile.TemporaryDirectory() as d:
+        proj, vid = _project_with_pair(Path(d))
+        assert proj.videos("original") == [vid]
+        assert proj.videos("processed") == [vid]
+        assert proj.has_video(vid, "original") and proj.has_video(vid, "processed")
+
+
+def test_annotation_scale_is_anisotropic():
+    with tempfile.TemporaryDirectory() as d:
+        proj, vid = _project_with_pair(Path(d), orig=(160, 120), proc=(80, 30))
+        sx, sy = proj.annotation_scale(vid)
+        assert abs(sx - 0.5) < 1e-9 and abs(sy - 0.25) < 1e-9   # 80/160, 30/120 -- x != y
+
+
+def test_annotation_scale_identity_without_processed():
+    with tempfile.TemporaryDirectory() as d:
+        proj, vid = _project_with_video(Path(d))
+        assert proj.annotation_scale(vid) == (1.0, 1.0)
+
+
+def test_extract_writes_both_frame_sets():
+    with tempfile.TemporaryDirectory() as d:
+        proj, vid = _project_with_pair(Path(d))
+        written = frames_mod.extract_frames(proj, vid, n=6, mode="uniform")
+        orig = sorted(proj.layout.frames_dir(vid, "original").glob("*.png"))
+        proc = sorted(proj.layout.frames_dir(vid, "processed").glob("*.png"))
+        assert written == orig
+        assert [p.name for p in orig] == [p.name for p in proc]     # same indices in both
+        # processed frames are actually smaller
+        import cv2
+        assert cv2.imread(str(proc[0])).shape[1] < cv2.imread(str(orig[0])).shape[1]
+
+
+def test_annotate_scales_labels_into_processed_space():
+    with tempfile.TemporaryDirectory() as d:
+        proj, vid = _project_with_pair(Path(d), orig=(160, 120), proc=(80, 30))
+
+        captured = {}
+
+        def fake_launch(config_path, dataset_dir):
+            # label every frame at a known ORIGINAL-space point, like napari would
+            _fake_napari_at(config_path, dataset_dir, x=100.0, y=80.0)
+            captured["dir"] = dataset_dir
+
+        ann.annotate_video(proj, vid, n=5, _launch=fake_launch)
+        df = pd.read_parquet(proj.layout.labels_parquet(vid))
+        # 100*0.5 = 50, 80*0.25 = 20  -- anisotropic scale applied correctly
+        assert (df["x"].dropna().round(6) == 50.0).all()
+        assert (df["y"].dropna().round(6) == 20.0).all()
+
+
+def _fake_napari_at(config_path: Path, dataset_dir: Path, *, x: float, y: float):
+    """Like _fake_napari_that_labels but places every marker at a fixed (x, y)."""
+    scorer = "labeler"
+    images = sorted(p.name for p in dataset_dir.glob("*.png"))
+    index = pd.MultiIndex.from_tuples([("labeled-data", dataset_dir.name, n) for n in images])
+    cols = pd.MultiIndex.from_tuples(
+        [(scorer, bp, c) for bp in BODYPARTS for c in ("x", "y")],
+        names=["scorer", "bodyparts", "coords"],
+    )
+    row = []
+    for _bp in BODYPARTS:
+        row += [x, y]
+    df = pd.DataFrame([row] * len(images), index=index, columns=cols)
+    df.to_hdf(dataset_dir / f"CollectedData_{scorer}.h5", key="df_with_missing", mode="w")
 
 
 if __name__ == "__main__":
