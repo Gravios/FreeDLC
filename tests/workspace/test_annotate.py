@@ -298,6 +298,69 @@ def _fake_napari_at(config_path: Path, dataset_dir: Path, *, x: float, y: float)
     df.to_hdf(dataset_dir / f"CollectedData_{scorer}.h5", key="df_with_missing", mode="w")
 
 
+# ---------------------------------------------- extract-frames --all (CLI)
+def _run(argv):
+    import contextlib
+    import io
+
+    from deeplabcut.workspace import cli
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        code = cli.main(argv)
+    return code, buf.getvalue()
+
+
+def _project_with_n_videos(root: Path, ids, *, size=(160, 120)):
+    proj = Project.create(root / "ws", task="reach", bodyparts=BODYPARTS)
+    for name in ids:
+        proj.add_video(_make_video(root / "raw" / f"{name}.mp4", n_frames=30, size=size), link="copy")
+    return proj
+
+
+def test_extract_all_covers_every_video():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        proj = _project_with_n_videos(d, ["a", "b", "c"])
+        code, out = _run(["extract-frames", "--all", "--project", str(d / "ws"), "-n", "5"])
+        assert code == 0, out
+        assert "3/3 video(s)" in out
+        for v in ("a", "b", "c"):
+            assert len(list(proj.layout.frames_dir(v, "original").glob("*.png"))) == 5
+
+
+def test_extract_all_and_video_are_mutually_exclusive():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        _project_with_n_videos(d, ["a"])
+        code, out = _run(["extract-frames", "a", "--all", "--project", str(d / "ws")])
+        assert code == 2 and "not both" in out
+
+
+def test_extract_requires_video_or_all():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        _project_with_n_videos(d, ["a"])
+        code, out = _run(["extract-frames", "--project", str(d / "ws")])
+        assert code == 2 and "or --all" in out
+
+
+def test_extract_all_on_empty_project():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        Project.create(Path(d) / "ws", task="reach", bodyparts=BODYPARTS)
+        code, out = _run(["extract-frames", "--all", "--project", str(Path(d) / "ws")])
+        assert code == 2 and "no registered videos" in out
+
+
+def test_extract_single_video_still_works():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        _project_with_n_videos(d, ["solo"])
+        code, out = _run(["extract-frames", "solo", "--project", str(d / "ws"), "-n", "4"])
+        assert code == 0 and "solo: extracted 4 frame(s)" in out
+
+
 if __name__ == "__main__":
     passed = 0
     for name, fn in sorted(globals().items()):

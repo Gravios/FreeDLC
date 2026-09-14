@@ -183,16 +183,36 @@ def cmd_extract_frames(args) -> int:
     from .annotate import resolve_video_id
     from .frames import extract_frames
 
+    if args.all and args.video:
+        print("give a video or --all, not both")
+        return 2
+    if not args.all and not args.video:
+        print("give a video id/path, or --all to extract from every registered video")
+        return 2
+
     try:
         project = _open_project(args.project)
-        video_id = resolve_video_id(project, args.video)
-        written = extract_frames(project, video_id, n=args.n, mode=args.mode, overwrite=args.overwrite)
-    except (FileNotFoundError, ValueError, OSError) as err:
+        video_ids = project.videos("original") if args.all else [resolve_video_id(project, args.video)]
+    except (FileNotFoundError, ValueError) as err:
         print(err)
         return 2
-    print(f"extracted {len(written)} frame(s) -> {project.layout.frames_dir(video_id)}")
-    print(f"  video: {video_id}  mode: {args.mode}")
-    return 0
+
+    if not video_ids:
+        print("no registered videos to extract from; run `dlc-ws add-video` first")
+        return 2
+
+    failures = 0
+    for video_id in video_ids:
+        try:
+            written = extract_frames(project, video_id, n=args.n, mode=args.mode, overwrite=args.overwrite)
+        except (FileNotFoundError, ValueError, OSError) as err:
+            print(f"{video_id}: {err}")
+            failures += 1
+            continue
+        print(f"{video_id}: extracted {len(written)} frame(s) -> {project.layout.frames_dir(video_id)}")
+    if args.all:
+        print(f"done: {len(video_ids) - failures}/{len(video_ids)} video(s), mode: {args.mode}")
+    return 2 if failures else 0
 
 
 def cmd_annotate(args) -> int:
@@ -545,7 +565,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_add_video)
 
     p = sub.add_parser("extract-frames", help="extract annotation frames from a registered video")
-    p.add_argument("video", help="registered video id, or a path whose name matches one")
+    p.add_argument("video", nargs="?", help="registered video id, or a path whose name matches one")
+    p.add_argument("--all", action="store_true", help="extract from every registered (original) video")
     p.add_argument("--project", default=".", help="project root or project.toml (default: current directory)")
     p.add_argument("-n", type=int, default=20, dest="n", help="number of frames to extract (default: 20)")
     p.add_argument("--mode", choices=("uniform", "kmeans"), default="uniform",
