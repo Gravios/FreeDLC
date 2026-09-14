@@ -361,6 +361,76 @@ def test_extract_single_video_still_works():
         assert code == 0 and "solo: extracted 4 frame(s)" in out
 
 
+# ------------------------------------------- kmeans stride + parallel --jobs
+def test_kmeans_stride_decodes_a_sample_not_every_frame():
+    # a 300-frame clip; with a stride the sampled set is far smaller than 300
+    idx_all = []
+    idx_strided = []
+
+    class _Cap:
+        def __init__(self, sink):
+            self.sink = sink
+            self.pos = 0
+
+        def set(self, prop, v):
+            self.pos = int(v)
+            self.sink.append(self.pos)
+
+        def read(self):
+            import numpy as np
+            return True, np.zeros((8, 8, 3), np.uint8)
+
+    frames_mod._frame_indices_kmeans(_Cap(idx_all), 300, 5, sample_stride=1, fps=30)
+    frames_mod._frame_indices_kmeans(_Cap(idx_strided), 300, 5, sample_stride=30, fps=30)
+    assert len(idx_all) == 300               # stride 1 touches every frame
+    assert len(idx_strided) == 10            # stride 30 touches ~1/30
+    assert len(idx_strided) < len(idx_all)
+
+
+def test_kmeans_default_stride_is_about_one_per_second():
+    # 600 frames at 30 fps -> default stride ~30 -> ~20 sampled, not 600
+    touched = []
+
+    class _Cap:
+        def set(self, prop, v):
+            touched.append(int(v))
+
+        def read(self):
+            import numpy as np
+            return True, np.zeros((8, 8, 3), np.uint8)
+
+    frames_mod._frame_indices_kmeans(_Cap(), 600, 5, sample_stride=None, fps=30)
+    assert 10 <= len(touched) <= 60          # a per-second-ish sample, nowhere near 600
+
+
+def test_extract_all_parallel_jobs():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        proj = _project_with_n_videos(d, ["a", "b", "c", "d"])
+        code, out = _run(["extract-frames", "--all", "-j", "2", "--project", str(d / "ws"), "-n", "5"])
+        assert code == 0, out
+        assert "4/4 video(s)" in out and "jobs: 2" in out
+        for v in ("a", "b", "c", "d"):
+            assert len(list(proj.layout.frames_dir(v, "original").glob("*.png"))) == 5
+
+
+def test_parallel_and_serial_produce_same_frames():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        proj = _project_with_n_videos(d, ["x", "y"])
+        assert _run(["extract-frames", "--all", "-j", "2", "--project", str(d / "ws"), "-n", "6"])[0] == 0
+        parallel = {v: sorted(p.name for p in proj.layout.frames_dir(v, "original").glob("*.png"))
+                    for v in ("x", "y")}
+        # wipe and redo serially
+        for v in ("x", "y"):
+            for f in proj.layout.frames_dir(v, "original").glob("*.png"):
+                f.unlink()
+        assert _run(["extract-frames", "--all", "-j", "1", "--project", str(d / "ws"), "-n", "6"])[0] == 0
+        serial = {v: sorted(p.name for p in proj.layout.frames_dir(v, "original").glob("*.png"))
+                  for v in ("x", "y")}
+        assert parallel == serial          # parallelism changes speed, not output
+
+
 if __name__ == "__main__":
     passed = 0
     for name, fn in sorted(globals().items()):

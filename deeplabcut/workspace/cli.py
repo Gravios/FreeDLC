@@ -179,6 +179,22 @@ def _open_project(project_arg: str):
     return Project.open(root)
 
 
+def _extract_one(args_tuple):
+    """Worker: extract one video in its own process. Returns (video_id, count_or_error)."""
+    project_root, video_id, n, mode, overwrite, sample_stride = args_tuple
+    from .frames import extract_frames
+    from .project import Project
+
+    try:
+        project = Project.open(project_root)
+        written = extract_frames(
+            project, video_id, n=n, mode=mode, overwrite=overwrite, sample_stride=sample_stride
+        )
+        return (video_id, len(written), None)
+    except (FileNotFoundError, ValueError, OSError) as err:
+        return (video_id, None, str(err))
+
+
 def cmd_extract_frames(args) -> int:
     from .annotate import resolve_video_id
     from .frames import extract_frames
@@ -201,17 +217,38 @@ def cmd_extract_frames(args) -> int:
         print("no registered videos to extract from; run `dlc-ws add-video` first")
         return 2
 
+    jobs = max(1, args.jobs)
     failures = 0
-    for video_id in video_ids:
-        try:
-            written = extract_frames(project, video_id, n=args.n, mode=args.mode, overwrite=args.overwrite)
-        except (FileNotFoundError, ValueError, OSError) as err:
-            print(f"{video_id}: {err}")
-            failures += 1
-            continue
-        print(f"{video_id}: extracted {len(written)} frame(s) -> {project.layout.frames_dir(video_id)}")
+
+    if jobs > 1 and len(video_ids) > 1:
+        # one process per video: videos are independent (separate files/decoders),
+        # so this scales cleanly; parallelising within a single video would not.
+        import concurrent.futures as cf
+
+        root = str(project.layout.root)
+        work = [(root, v, args.n, args.mode, args.overwrite, args.sample_stride) for v in video_ids]
+        with cf.ProcessPoolExecutor(max_workers=min(jobs, len(video_ids))) as pool:
+            for video_id, count, err in pool.map(_extract_one, work):
+                if err is not None:
+                    print(f"{video_id}: {err}")
+                    failures += 1
+                else:
+                    print(f"{video_id}: extracted {count} frame(s)")
+    else:
+        for video_id in video_ids:
+            try:
+                written = extract_frames(
+                    project, video_id, n=args.n, mode=args.mode,
+                    overwrite=args.overwrite, sample_stride=args.sample_stride,
+                )
+            except (FileNotFoundError, ValueError, OSError) as err:
+                print(f"{video_id}: {err}")
+                failures += 1
+                continue
+            print(f"{video_id}: extracted {len(written)} frame(s) -> {project.layout.frames_dir(video_id)}")
+
     if args.all:
-        print(f"done: {len(video_ids) - failures}/{len(video_ids)} video(s), mode: {args.mode}")
+        print(f"done: {len(video_ids) - failures}/{len(video_ids)} video(s), mode: {args.mode}, jobs: {jobs}")
     return 2 if failures else 0
 
 
@@ -571,6 +608,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-n", type=int, default=20, dest="n", help="number of frames to extract (default: 20)")
     p.add_argument("--mode", choices=("uniform", "kmeans"), default="uniform",
                    help="uniform (evenly spaced) or kmeans (content-clustered)")
+    p.add_argument("--sample-stride", type=int, default=None, dest="sample_stride",
+                   help="kmeans only: decode every Nth frame when clustering (default: ~1 per second)")
+    p.add_argument("--jobs", "-j", type=int, default=1,
+                   help="with --all, extract this many videos in parallel (one process each)")
     p.add_argument("--overwrite", action="store_true", help="re-extract even if frames already exist")
     p.set_defaults(func=cmd_extract_frames)
 

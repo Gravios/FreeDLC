@@ -68,14 +68,30 @@ def _frame_indices_uniform(total: int, n: int) -> list[int]:
     return [min(total - 1, int((i + 0.5) * total / n)) for i in range(n)]
 
 
-def _frame_indices_kmeans(video, total: int, n: int, *, resize: int = 32, step: int = 1) -> list[int]:
-    """Return ``n`` frame indices chosen as the frames nearest k-means centroids."""
+def _frame_indices_kmeans(
+    video, total: int, n: int, *, resize: int = 32, sample_stride: int | None = None, fps: float | None = None
+) -> list[int]:
+    """Return ``n`` frame indices chosen as the frames nearest k-means centroids.
+
+    Only every ``sample_stride``-th frame is decoded for clustering -- the selection is
+    over that sample, not every frame. This is the dominant cost of kmeans extraction,
+    so the stride is what makes it tractable on long videos: clustering on a coarse
+    sample yields essentially the same representative frames at a fraction of the
+    decode. When ``sample_stride`` is not given it defaults to roughly one frame per
+    second (from ``fps``), which is plenty for choosing ``n`` distinct frames, and is
+    floored so the sample stays large enough to cluster ``n`` groups.
+    """
     import cv2
     import numpy as np
 
+    if sample_stride is None:
+        per_second = int(round(fps)) if fps and fps > 0 else 30
+        # ~1 fps, but never so coarse that the sample can't yield n clusters
+        sample_stride = max(1, min(per_second, total // max(n * 3, 1) or 1))
+
     sampled_idx: list[int] = []
     feats: list[np.ndarray] = []
-    for idx in range(0, total, max(1, step)):
+    for idx in range(0, total, max(1, sample_stride)):
         video.set(cv2.CAP_PROP_POS_FRAMES, idx)
         ok, frame = video.read()
         if not ok:
@@ -125,6 +141,7 @@ def extract_frames(
     n: int = 20,
     mode: str = "uniform",
     overwrite: bool = False,
+    sample_stride: int | None = None,
 ) -> list[Path]:
     """Extract annotation frames for ``video_id`` into ``sources/annotations/``.
 
@@ -136,6 +153,9 @@ def extract_frames(
         n: number of frames to extract.
         mode: ``"uniform"`` (evenly spaced) or ``"kmeans"`` (content-clustered).
         overwrite: re-extract even if original frames already exist.
+        sample_stride: for kmeans only -- decode every Nth frame when clustering.
+            ``None`` defaults to roughly one frame per second, which is what keeps
+            kmeans from decoding the whole video. Ignored by uniform.
 
     Returns:
         The written *original* frame paths, sorted. If they already exist and
@@ -161,7 +181,11 @@ def extract_frames(
         total = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
         if total <= 0:
             raise ValueError(f"video {media} reports no frames (unreadable or empty)")
-        indices = _frame_indices_uniform(total, n) if mode == "uniform" else _frame_indices_kmeans(video, total, n)
+        if mode == "uniform":
+            indices = _frame_indices_uniform(total, n)
+        else:
+            fps = video.get(cv2.CAP_PROP_FPS)
+            indices = _frame_indices_kmeans(video, total, n, sample_stride=sample_stride, fps=fps)
 
         if overwrite:
             for stale in frames_dir.glob("*.png"):
