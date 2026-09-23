@@ -19,7 +19,8 @@ import pandas as pd
 
 from deeplabcut import workspace as ws
 from deeplabcut.workspace import coco_export
-from deeplabcut.workspace.schema import ProjectConfig
+from deeplabcut.workspace.manifest import write_manifest
+from deeplabcut.workspace.schema import ProjectConfig, VideoRecord
 
 
 def _labels(images, individuals, bodyparts, fill=1.0):
@@ -116,6 +117,57 @@ def test_export_coco_dataset_stages_json_and_frames():
         # frame materialized under dataset/images/<video_id>/
         assert (Path(d) / "dataset" / "images" / "v1" / "i1.png").is_symlink()
         assert json.loads(train_json.read_text())["images"][0]["file_name"] == "v1/i1.png"
+
+
+def _register_dims(proj, vid, kind, w, h):
+    """Write a video.toml with known dimensions, so annotation_scale can be derived."""
+    rec = VideoRecord(video_id=vid, source_path=f"{kind}.mp4", width=w, height=h, link="reference")
+    write_manifest(proj.layout.video_toml(vid, kind), rec.to_dict())
+
+
+def test_export_uses_processed_frames_when_scaled():
+    # labels.parquet is in processed space (annotate scales into it), so export must
+    # materialize the processed frames -- not the original ones they were drawn on.
+    with tempfile.TemporaryDirectory() as d:
+        proj = ws.Project.create(Path(d) / "ws", task="reach", bodyparts=["snout", "paw"])
+        _register_dims(proj, "v1", "original", 1920, 1080)
+        _register_dims(proj, "v1", "processed", 192, 108)
+        assert proj.annotation_scale("v1") != (1.0, 1.0)   # a real scale exists
+
+        for kind, tag in (("original", b"ORIG-1920x1080"), ("processed", b"PROC-192x108")):
+            fdir = proj.layout.frames_dir("v1", kind)
+            fdir.mkdir(parents=True)
+            (fdir / "img0004.png").write_bytes(tag)
+
+        df = _labels(["img0004.png"], ["single"], ["snout", "paw"])
+        coco_export.export_coco_dataset(
+            proj, Path(d) / "dataset", video_ids=["v1"],
+            train_fraction=1.0, seed=0, link="symlink", labels_provider=lambda p, v: df,
+        )
+        staged = Path(d) / "dataset" / "images" / "v1" / "img0004.png"
+        # provenance: the staged frame resolves into frames/processed, the low-res set
+        assert staged.resolve() == proj.layout.frames_dir("v1", "processed").resolve() / "img0004.png"
+        assert staged.read_bytes() == b"PROC-192x108"
+
+
+def test_export_uses_original_frames_without_processed():
+    # no processed counterpart -> labels stay in original space -> original frames.
+    with tempfile.TemporaryDirectory() as d:
+        proj = ws.Project.create(Path(d) / "ws", task="reach", bodyparts=["snout", "paw"])
+        _register_dims(proj, "v1", "original", 1920, 1080)
+        assert proj.annotation_scale("v1") == (1.0, 1.0)
+
+        fdir = proj.layout.frames_dir("v1", "original")
+        fdir.mkdir(parents=True)
+        (fdir / "img0004.png").write_bytes(b"ORIG")
+
+        df = _labels(["img0004.png"], ["single"], ["snout", "paw"])
+        coco_export.export_coco_dataset(
+            proj, Path(d) / "dataset", video_ids=["v1"],
+            train_fraction=1.0, seed=0, link="symlink", labels_provider=lambda p, v: df,
+        )
+        staged = Path(d) / "dataset" / "images" / "v1" / "img0004.png"
+        assert staged.resolve() == proj.layout.frames_dir("v1", "original").resolve() / "img0004.png"
 
 
 # --------------------------------------------------------- native driver (lazy)
