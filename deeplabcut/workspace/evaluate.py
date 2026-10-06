@@ -35,14 +35,14 @@ def infer_on_frames(bundle, frames_dir, images, *, device: str | None = None, ba
     """Default predictions provider: run the bundle on labeled frames.
 
     Returns a long DataFrame (``image, individual, bodypart, x, y, likelihood``)
-    keyed by frame filename. Requires torch (imported lazily via the bundle
-    runner and analyze_images).
+    keyed by frame filename. Requires torch (imported lazily via the bundle's
+    runners). The runners are driven directly, the way DeepLabCut's own image
+    analysis does: a top-down model first detects boxes, and the pose runner then
+    takes ``(image, boxes)`` pairs instead of bare image paths.
     """
     from pathlib import Path
 
     import pandas as pd
-
-    from deeplabcut.pose_estimation_pytorch import analyze_images
 
     from .apply import predictions_to_long_df
 
@@ -52,11 +52,14 @@ def infer_on_frames(bundle, frames_dir, images, *, device: str | None = None, ba
 
     runner = bundle.build_pose_runner(device=device, batch_size=batch_size)
     detector = bundle.build_detector_runner(device=device) if bundle.card.top_down else None
-    predictions = analyze_images(paths, runner, detector_runner=detector)
+    pose_inputs = paths
+    if detector is not None:
+        pose_inputs = list(zip(paths, detector.inference(images=paths), strict=True))
+    predictions = runner.inference(pose_inputs)
 
     meta = bundle._read_pose_config().get("metadata", {})
     frames = []
-    for name, pred in zip(image_names, predictions, strict=False):
+    for name, pred in zip(image_names, predictions, strict=True):
         long = predictions_to_long_df([pred], bundle.card.bodyparts,
                                       unique_bodyparts=meta.get("unique_bodyparts") or None)
         long["image"] = name

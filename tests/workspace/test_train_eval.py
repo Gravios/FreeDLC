@@ -159,6 +159,58 @@ def test_evaluate_model_with_injected_providers():
         assert abs(ws.ModelBundle.open(proj.layout.model_dir("m1")).card.metrics["mean_error"] - 2.5) < 1e-9
 
 
+def test_infer_on_frames_drives_the_runners():
+    """Default predictions: bottom-up feeds image paths, top-down feeds (image, boxes) pairs."""
+    import numpy as np
+
+    from deeplabcut.workspace import evaluate
+
+    class _Runner:
+        def __init__(self, out):
+            self.out, self.seen = out, None
+
+        def inference(self, images):
+            self.seen = list(images)
+            return [self.out] * len(self.seen)
+
+    class _Card:
+        bodyparts = ["snout", "paw"]
+
+        def __init__(self, top_down):
+            self.top_down = top_down
+
+    class _Bundle:
+        def __init__(self, top_down):
+            self.card = _Card(top_down)
+            self.pose = _Runner({"bodyparts": np.array([[[1.0, 2.0, 0.9], [3.0, 4.0, 0.8]]])})
+            self.detector = _Runner({"bboxes": np.zeros((1, 4))})
+
+        def build_pose_runner(self, **kwargs):
+            return self.pose
+
+        def build_detector_runner(self, **kwargs):
+            return self.detector
+
+        def _read_pose_config(self):
+            return {"metadata": {}}
+
+    frames = Path("/frames")
+    paths = [str(frames / "i1.png"), str(frames / "i2.png")]
+
+    bottom_up = _Bundle(top_down=False)
+    df = evaluate.infer_on_frames(bottom_up, frames, ["i1.png", "i2.png"])
+    assert bottom_up.pose.seen == paths and bottom_up.detector.seen is None
+    assert list(df.columns) == ["individual", "bodypart", "x", "y", "likelihood", "image"]
+    assert df["image"].tolist() == ["i1.png", "i1.png", "i2.png", "i2.png"]
+    assert df[df.bodypart == "paw"].iloc[0][["x", "y"]].tolist() == [3.0, 4.0]
+
+    top_down = _Bundle(top_down=True)
+    evaluate.infer_on_frames(top_down, frames, ["i1.png", "i2.png"])
+    assert top_down.detector.seen == paths
+    assert [image for image, _boxes in top_down.pose.seen] == paths
+    assert all("bboxes" in boxes for _image, boxes in top_down.pose.seen)
+
+
 # ------------------------------------------------------------------ smoke runner
 def _run_smoke() -> int:
     checks = [obj for name, obj in sorted(globals().items())
