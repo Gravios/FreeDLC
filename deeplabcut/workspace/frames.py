@@ -20,23 +20,35 @@ Selection runs once, on the original:
 * ``kmeans`` -- cluster frames by downsampled appearance and take the one nearest each
   centroid (DeepLabCut's classic strategy). Needs scikit-learn, imported lazily.
 
-Frames are named ``img<frame_index>.png`` zero-padded to the video's frame count, so a
-name maps back to its source frame, sorts correctly, and matches between the original
-and processed sets. cv2 is imported inside the functions, keeping the module (and the
-rest of the CLI) importable without it.
+Frames are named ``img<frame_index>.png`` zero-padded to the original video's frame
+count, so a name maps back to its source frame and sorts correctly. A processed frame
+takes the *file name* of its original, so the two sets always match by name -- which is
+how labels (keyed by image name) find their frame in either set. cv2 is imported inside
+the functions, keeping the module (and the rest of the CLI) importable without it.
+
+Extraction also keeps an existing frame set whole. A frame that has become a link back
+into its own directory -- the self-links an earlier ingest bug left in place of the
+images -- is re-read from the video at the index its name carries, and processed frames
+missing for an original (the processed video having been registered after extraction)
+are filled in. Neither changes which frames are selected, so existing labels keep
+pointing at the same images.
 """
 
 from __future__ import annotations
 
+import logging
+import os
+import re
 from pathlib import Path
 
 __all__ = [
-    "VIDEO_MEDIA_GLOB",
     "resolve_media",
     "extract_frames",
 ]
 
-VIDEO_MEDIA_GLOB = "video.*"
+log = logging.getLogger(__name__)
+
+_FRAME_NAME = re.compile(r"img(\d+)\.png")
 
 
 def resolve_media(project, video_id: str, kind: str = "original") -> Path:
@@ -50,14 +62,14 @@ def resolve_media(project, video_id: str, kind: str = "original") -> Path:
         raise FileNotFoundError(
             f"{kind} video {video_id!r} is not registered; run `dlc-ws add-video` first"
         )
-    vdir = project.layout.video_dir(video_id, kind)
-    media = sorted(vdir.glob(VIDEO_MEDIA_GLOB))
-    if media:
-        return media[0]
+    for media in project.video_media_files(video_id, kind):
+        if media.is_file():  # skips a symlink whose source has moved away
+            return media
     record = project.video_record(video_id, kind)  # a "reference" materializes nothing
     src = Path(record.source_path)
     if src.is_file():
         return src
+    vdir = project.layout.video_dir(video_id, kind)
     raise FileNotFoundError(f"no media on disk for {kind} video {video_id!r} (looked in {vdir} and {src})")
 
 
@@ -129,21 +141,106 @@ def _frame_indices_kmeans(
     return sorted(dict.fromkeys(chosen))
 
 
-def _grab(video, indices, out_dir: Path, width: int):
-    """Write the given frame ``indices`` from an open capture into ``out_dir``."""
+def _frame_index(name: str) -> int | None:
+    """The source frame index an extracted frame's file name carries, if it has one."""
+    m = _FRAME_NAME.fullmatch(name)
+    return int(m.group(1)) if m else None
+
+
+def _grab(video, targets) -> list[Path]:
+    """Write ``(frame_index, path)`` ``targets`` from an open capture; return those written.
+
+    A path that is currently a symlink is unlinked first: writing through it would put
+    the image wherever the link points (or fail outright on a dangling or looping one).
+    """
     import cv2
 
-    out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
-    for idx in indices:
+    for idx, out in targets:
         video.set(cv2.CAP_PROP_POS_FRAMES, idx)
         ok, frame = video.read()
         if not ok:
             continue
-        out = out_dir / f"img{idx:0{width}d}.png"
-        cv2.imwrite(str(out), frame)
-        written.append(out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if out.is_symlink():
+            out.unlink()
+        if cv2.imwrite(str(out), frame):
+            written.append(out)
     return sorted(written)
+
+
+def _grab_from(project, video_id: str, kind: str, targets) -> list[Path]:
+    """Open the registered ``kind`` video of ``video_id`` and :func:`_grab` ``targets``."""
+    import cv2
+
+    media = resolve_media(project, video_id, kind)
+    video = cv2.VideoCapture(str(media))
+    try:
+        return _grab(video, targets)
+    finally:
+        video.release()
+
+
+def _restore_frames(project, video_id: str, kind: str, names) -> list[str]:
+    """Re-read the frames ``names`` of ``kind`` from their video; return the names restored.
+
+    Each is re-read at the index its name carries and written under that same name.
+    Best-effort: names that carry no index, and a video that is gone, are reported
+    and left alone rather than raised.
+    """
+    frames_dir = project.layout.frames_dir(video_id, kind)
+    targets = [(idx, frames_dir / name) for name in names if (idx := _frame_index(name)) is not None]
+    restored: list[str] = []
+    if targets:
+        try:
+            restored = [p.name for p in _grab_from(project, video_id, kind, targets)]
+        except FileNotFoundError as err:
+            log.warning("cannot restore %s frames of %s: %s", kind, video_id, err)
+    lost = sorted(set(names) - set(restored))
+    if lost:
+        log.warning("%d %s frame(s) of %s are unreadable and were not restored (e.g. %s)",
+                    len(lost), kind, video_id, frames_dir / lost[0])
+    return restored
+
+
+def _is_self_link(path: Path) -> bool:
+    """True if ``path`` is an unreadable symlink pointing back into its own directory.
+
+    That is a frame which can never become readable again (it names itself, or a
+    sibling that is gone), as opposed to a link to a file elsewhere that is merely
+    unavailable right now -- an unmounted legacy project, say.
+    """
+    if not path.is_symlink() or path.is_file():
+        return False
+    target = Path(os.path.join(path.parent, os.readlink(path)))
+    return target.parent.resolve() == path.parent.resolve()
+
+
+def _complete_existing(project, video_id: str, entries: list[Path]) -> list[Path]:
+    """Make an already-extracted frame set whole again; return the readable originals.
+
+    Restores original frames that have become self-links, then fills in any processed
+    frame missing for a readable original. The selection is left as it is. Links to
+    missing files *outside* the frame set are only reported: their images may differ
+    from the video's (a cropped legacy frame) and may yet come back.
+    """
+    self_links = [p.name for p in entries if _is_self_link(p)]
+    if self_links:
+        log.warning("%d original frame(s) of %s are links to themselves; re-extracting them",
+                    len(self_links), video_id)
+        _restore_frames(project, video_id, "original", self_links)
+    frames = sorted(p for p in entries if p.is_file())
+    dangling = [p for p in entries if not p.is_file() and p.name not in self_links]
+    if dangling:
+        log.warning("%d original frame(s) of %s link to missing files (e.g. %s -> %s)",
+                    len(dangling), video_id, dangling[0], os.readlink(dangling[0]))
+
+    if project.has_video(video_id, "processed"):
+        proc_dir = project.layout.frames_dir(video_id, "processed")
+        missing = [p.name for p in frames if not (proc_dir / p.name).is_file()]
+        if missing:
+            _restore_frames(project, video_id, "processed", missing)
+    return frames
 
 
 def extract_frames(
@@ -170,11 +267,14 @@ def extract_frames(
             kmeans from decoding the whole video. Ignored by uniform.
 
     Returns:
-        The written *original* frame paths, sorted. If they already exist and
-        ``overwrite`` is false, returns them without touching any video.
+        The *original* frame paths, sorted. If frames already exist and ``overwrite``
+        is false, the selection is kept: no new frames are chosen (``n`` and ``mode``
+        are ignored) and the readable existing ones are returned, after restoring
+        any that had become self-links and any processed frames missing for them.
 
     Raises:
-        ValueError: on an unknown ``mode`` or an unreadable/empty video.
+        ValueError: on an unknown ``mode``, an unreadable/empty video, or existing
+            frames none of which is readable or could be restored.
         FileNotFoundError: if the original video is not registered or its media is gone.
     """
     import cv2
@@ -183,9 +283,15 @@ def extract_frames(
         raise ValueError(f"mode must be 'uniform' or 'kmeans', got {mode!r}")
 
     frames_dir = project.layout.frames_dir(video_id, "original")
-    existing = sorted(frames_dir.glob("*.png")) if frames_dir.is_dir() else []
-    if existing and not overwrite:
-        return existing
+    entries = sorted(frames_dir.glob("*.png")) if frames_dir.is_dir() else []
+    if entries and not overwrite:
+        frames = _complete_existing(project, video_id, entries)
+        if not frames:
+            raise ValueError(
+                f"none of the frames in {frames_dir} is readable and they could not be restored; "
+                f"re-run `dlc-ws extract-frames --overwrite` for {video_id!r}"
+            )
+        return frames
 
     media = resolve_media(project, video_id, "original")
     video = cv2.VideoCapture(str(media))
@@ -199,30 +305,24 @@ def extract_frames(
             fps = video.get(cv2.CAP_PROP_FPS)
             indices = _frame_indices_kmeans(video, total, n, sample_stride=sample_stride, fps=fps)
 
-        if overwrite:
-            for stale in frames_dir.glob("*.png"):
-                stale.unlink()
+        for stale in entries:
+            stale.unlink()
         width = max(4, len(str(total - 1)))
-        written = _grab(video, indices, frames_dir, width)
+        written = _grab(video, [(idx, frames_dir / f"img{idx:0{width}d}.png") for idx in indices])
     finally:
         video.release()
 
     if not written:
         raise ValueError(f"no frames could be read from {media}")
 
-    # mirror the same frames from the processed video, if one is registered
+    # mirror the same frames from the processed video, if one is registered, under
+    # the same file names so the two sets pair up by name
     if project.has_video(video_id, "processed"):
-        proc_media = resolve_media(project, video_id, "processed")
         proc_dir = project.layout.frames_dir(video_id, "processed")
-        proc_cap = cv2.VideoCapture(str(proc_media))
-        try:
-            proc_total = int(proc_cap.get(cv2.CAP_PROP_FRAME_COUNT)) or total
-            proc_width = max(4, len(str(proc_total - 1)))
-            if overwrite and proc_dir.is_dir():
-                for stale in proc_dir.glob("*.png"):
-                    stale.unlink()
-            _grab(proc_cap, indices, proc_dir, proc_width)
-        finally:
-            proc_cap.release()
+        if proc_dir.is_dir():
+            for stale in proc_dir.glob("*.png"):
+                stale.unlink()
+        _grab_from(project, video_id, "processed",
+                   [(idx, proc_dir / p.name) for p in written if (idx := _frame_index(p.name)) is not None])
 
-    return sorted(written)
+    return written

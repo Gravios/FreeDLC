@@ -468,6 +468,11 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def _self_link(path: Path) -> None:
+    """Replace ``path`` with a symlink to itself -- what the old ingest left behind."""
+    path.unlink()
+    path.symlink_to(path)
+
 
 def test_annotate_leaves_frames_as_real_files():
     """Regression: ingesting through the staging view replaced every frame with a self-link."""
@@ -485,7 +490,59 @@ def test_annotate_leaves_frames_as_real_files():
             assert all(p.is_symlink() and p.is_file() for p in staged)   # links, none dangling
 
 
+def test_annotate_restores_frames_destroyed_by_self_links():
+    """A project already damaged by the old ingest heals on the next annotate, labels kept."""
+    with tempfile.TemporaryDirectory() as d:
+        proj, vid = _project_with_video(Path(d))
+        ann.annotate_video(proj, vid, n=6, _launch=_fake_napari_that_labels)
+        frames = sorted(proj.layout.frames_dir(vid, "original").glob("*.png"))
+        before = {p.name: _sha(p) for p in frames}
+        labels_before = pd.read_parquet(proj.layout.labels_parquet(vid))
+        for p in frames:
+            _self_link(p)
+        assert not any(p.is_file() for p in frames)
 
+        seen = {}
+
+        def reopen(config_path, dataset_dir):
+            seen["readable"] = sorted(p.name for p in dataset_dir.glob("*.png") if p.is_file())
+            seen["labels"] = ann.find_collected_data(dataset_dir)
+
+        ann.annotate_video(proj, vid, n=99, _launch=reopen)        # n ignored: selection is kept
+        assert seen["readable"] == sorted(before)                  # the annotator sees every frame
+        assert seen["labels"] is not None                          # ...and the earlier labels
+        frames = sorted(proj.layout.frames_dir(vid, "original").glob("*.png"))
+        assert {p.name: _sha(p) for p in frames} == before         # re-read from the same indices
+        assert not any(p.is_symlink() for p in frames)
+        pd.testing.assert_frame_equal(pd.read_parquet(proj.layout.labels_parquet(vid)), labels_before)
+
+
+def test_extract_reports_unrestorable_frames():
+    with tempfile.TemporaryDirectory() as d:
+        proj, vid = _project_with_video(Path(d))
+        for p in frames_mod.extract_frames(proj, vid, n=4):
+            _self_link(p)
+        for media in proj.video_media_files(vid):                  # the video is gone too
+            media.unlink()
+        Path(proj.video_record(vid).source_path).unlink()
+        try:
+            frames_mod.extract_frames(proj, vid, n=4)
+        except ValueError as err:
+            assert "--overwrite" in str(err)
+        else:
+            raise AssertionError("expected ValueError")
+
+
+def test_extract_leaves_external_dangling_links_alone():
+    """A link to a missing file elsewhere may come back; it is not silently re-extracted."""
+    with tempfile.TemporaryDirectory() as d:
+        proj, vid = _project_with_video(Path(d))
+        frames = frames_mod.extract_frames(proj, vid, n=4)
+        elsewhere = Path(d) / "legacy" / frames[0].name
+        frames[0].unlink()
+        frames[0].symlink_to(elsewhere)
+        assert frames_mod.extract_frames(proj, vid, n=4) == frames[1:]
+        assert frames[0].is_symlink() and not frames[0].exists()
 
 
 def test_staging_repairs_and_prunes_links():
@@ -508,7 +565,47 @@ def test_staging_repairs_and_prunes_links():
         assert saved.read_bytes() == b"labels"                     # saved labels are never pruned
 
 
+def test_processed_frames_backfilled_under_original_names():
+    """A processed video registered after extraction still gets its frame set."""
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        proj = Project.create(d / "ws", task="reach", bodyparts=BODYPARTS)
+        vid = proj.add_video(_make_video(d / "raw" / "clip.mp4", size=(160, 120)), link="copy")
+        orig = frames_mod.extract_frames(proj, vid, n=5)
+        assert not proj.layout.frames_dir(vid, "processed").exists()
 
+        proj.add_video(_make_video(d / "small" / "clip.mp4", size=(80, 60)), kind="processed", link="copy")
+        assert frames_mod.extract_frames(proj, vid, n=5) == orig   # selection untouched
+        proc = sorted(proj.layout.frames_dir(vid, "processed").glob("*.png"))
+        assert [p.name for p in proc] == [p.name for p in orig]
+
+
+def test_extract_overwrite_never_writes_through_a_link():
+    with tempfile.TemporaryDirectory() as d:
+        proj, vid = _project_with_video(Path(d))
+        frames = frames_mod.extract_frames(proj, vid, n=4)
+        outside = Path(d) / "outside.png"
+        outside.write_bytes(b"keep me")
+        frames[0].unlink()
+        frames[0].symlink_to(outside)
+        redone = frames_mod.extract_frames(proj, vid, n=4, overwrite=True)
+        assert outside.read_bytes() == b"keep me"
+        assert [p.name for p in redone] == [p.name for p in frames]
+        assert not any(p.is_symlink() for p in redone)
+
+
+def test_resolve_media_ignores_video_toml():
+    """``video.toml`` sits beside the media; it must never be mistaken for it."""
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        proj = Project.create(d / "ws", task="reach", bodyparts=BODYPARTS)
+        src = _make_video(d / "raw" / "clip.mp4")
+        ref = proj.add_video(src, link="reference", video_id="ref")
+        assert frames_mod.resolve_media(proj, ref) == src.resolve()          # nothing materialized
+        late = d / "raw" / "late.webm"                                       # sorts after "toml"
+        late.write_bytes(src.read_bytes())
+        vid = proj.add_video(late, link="symlink")
+        assert frames_mod.resolve_media(proj, vid).name == "video.webm"
 
 
 if __name__ == "__main__":
