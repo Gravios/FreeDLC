@@ -23,12 +23,24 @@ from pathlib import Path
 from typing import Any
 
 __all__ = [
+    "ANNOTATIONS_DIRNAME",
+    "IMAGES_DIRNAME",
+    "TRAIN_JSON",
+    "TEST_JSON",
     "workspace_to_dlc_project_dict",
     "labels_to_coco",
     "split_coco",
     "write_coco_json",
     "export_coco_dataset",
 ]
+
+
+# The dataset-root shape DeepLabCut's COCOLoader expects: it loads
+# ``<root>/annotations/<json>`` and resolves each ``file_name`` under ``<root>/images/``.
+ANNOTATIONS_DIRNAME = "annotations"
+IMAGES_DIRNAME = "images"
+TRAIN_JSON = "train.json"
+TEST_JSON = "test.json"
 
 
 def workspace_to_dlc_project_dict(config) -> dict[str, Any]:
@@ -136,8 +148,10 @@ def export_coco_dataset(
 ) -> tuple[Path, Path]:
     """Stage a COCO dataset for training under ``dest``.
 
-    Writes ``dest/train.json`` and ``dest/test.json`` and materializes the
-    labeled frames under ``dest/images/<video_id>/`` (the COCO ``file_name``s).
+    Writes ``dest/annotations/train.json`` and ``dest/annotations/test.json`` and
+    materializes the labeled frames under ``dest/images/<video_id>/`` (the COCO
+    ``file_name``s) -- the ``annotations/`` + ``images/`` shape DeepLabCut's
+    ``COCOLoader`` reads a dataset root as.
     ``labels_provider(project, video_id) -> long DataFrame`` defaults to reading
     ``labels.parquet`` (pyarrow, lazy).
 
@@ -147,15 +161,15 @@ def export_coco_dataset(
     from .util import materialize
 
     dest = Path(dest)
-    images_root = dest / "images"
+    images_root = dest / IMAGES_DIRNAME
     labels_provider = labels_provider or read_labels
     video_ids = list(video_ids) if video_ids is not None else project.annotated_videos()
 
     labels_by_video = {vid: labels_provider(project, vid) for vid in video_ids}
     coco = labels_to_coco(labels_by_video, project.config.bodyparts, image_dims=image_dims)
     train, test = split_coco(coco, train_fraction=train_fraction, seed=seed)
-    train_path = write_coco_json(train, dest / "train.json")
-    test_path = write_coco_json(test, dest / "test.json")
+    train_path = write_coco_json(train, dest / ANNOTATIONS_DIRNAME / TRAIN_JSON)
+    test_path = write_coco_json(test, dest / ANNOTATIONS_DIRNAME / TEST_JSON)
 
     # materialize frames at dest/images/<video_id>/<image>, taken from the frame set
     # that is in the labels' pixel space (frames/processed when annotations were

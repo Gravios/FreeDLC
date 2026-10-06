@@ -114,6 +114,9 @@ def test_export_coco_dataset_stages_json_and_frames():
             train_fraction=1.0, seed=0, labels_provider=lambda p, v: df,
         )
         assert train_json.exists() and test_json.exists()
+        # the JSONs sit where COCOLoader looks: <dataset>/annotations/<name>
+        assert train_json == Path(d) / "dataset" / "annotations" / "train.json"
+        assert test_json == Path(d) / "dataset" / "annotations" / "test.json"
         # frame materialized under dataset/images/<video_id>/
         assert (Path(d) / "dataset" / "images" / "v1" / "i1.png").is_symlink()
         assert json.loads(train_json.read_text())["images"][0]["file_name"] == "v1/i1.png"

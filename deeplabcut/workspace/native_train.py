@@ -58,7 +58,7 @@ def train_in_workspace(project, run, config) -> Path:
     from deeplabcut.pose_estimation_pytorch.data import COCOLoader
     from deeplabcut.pose_estimation_pytorch.task import Task
 
-    from .coco_export import export_coco_dataset, workspace_to_dlc_project_dict
+    from .coco_export import TEST_JSON, TRAIN_JSON, export_coco_dataset, workspace_to_dlc_project_dict
 
     dataset_dir = run.dir / "dataset"
     train_dir = run.dir / "train"
@@ -81,7 +81,7 @@ def train_in_workspace(project, run, config) -> Path:
     )
 
     loader = COCOLoader(dataset_dir, model_config=pose_cfg,
-                        train_json_filename="train.json", test_json_filename="test.json")
+                        train_json_filename=TRAIN_JSON, test_json_filename=TEST_JSON)
 
     # Apply TrainConfig overrides onto the config, exactly as train_network does.
     loader.model_cfg.train_settings.batch_size = config.batch_size
