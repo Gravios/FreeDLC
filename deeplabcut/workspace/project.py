@@ -12,7 +12,6 @@ enumerates entities, and opens runs. Model assembly lives in
 """
 from __future__ import annotations
 
-import shutil
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -20,7 +19,7 @@ from . import ids
 from .layout import Layout
 from .manifest import read_manifest, write_manifest
 from .schema import ProjectConfig, RunManifest, VideoRecord, now_iso
-from .util import code_version, sha256_file
+from .util import code_version, materialize, same_file, sha256_file
 
 __all__ = ["Project", "Run"]
 
@@ -142,6 +141,8 @@ class Project:
             link: how to materialize the media (symlink | copy | reference).
             hash: also compute and record the source SHA-256 (streams the file).
         """
+        if link not in ("symlink", "copy", "reference"):
+            raise ValueError(f"link must be symlink|copy|reference, got {link!r}")
         src = Path(path).expanduser().resolve()
         if not src.is_file():
             raise FileNotFoundError(f"video not found: {src}")
@@ -150,18 +151,19 @@ class Project:
             raise FileExistsError(f"{kind} video id {vid!r} already registered")
 
         vdir = self.layout.video_dir(vid, kind)
-        vdir.mkdir(parents=True, exist_ok=True)
         media = self.layout.video_media(vid, src.suffix or ".mp4", kind)
-        if link == "symlink":
-            if media.exists() or media.is_symlink():
-                media.unlink()
-            media.symlink_to(src)
-        elif link == "copy":
-            shutil.copy2(src, media)
-        elif link == "reference":
-            pass
-        else:
-            raise ValueError(f"link must be symlink|copy|reference, got {link!r}")
+        # Re-registering replaces whatever media the id had. Refuse when the source
+        # is that media itself (a copy living in the workspace): replacing it would
+        # delete the only copy and, for a symlink, leave a link pointing at itself.
+        previous = self.video_media_files(vid, kind)
+        if any(not p.is_symlink() and same_file(p, src) for p in previous):
+            raise ValueError(f"{src} is already this project's own media for {kind} video {vid!r}")
+        vdir.mkdir(parents=True, exist_ok=True)
+        for stale in previous:
+            if stale != media or link == "reference":
+                stale.unlink()  # another extension, or media a reference must not keep
+        if link != "reference":
+            materialize(src, media, link)
 
         width, height, fps, n_frames = _probe_video(src)
         record = VideoRecord(
@@ -177,6 +179,17 @@ class Project:
         )
         write_manifest(self.layout.video_toml(vid, kind), record.to_dict())
         return vid
+
+    def video_media_files(self, video_id: str, kind: str = "original") -> list[Path]:
+        """Media materialized under a video's directory (``video.<ext>``), sorted.
+
+        Empty for an unregistered video and for a ``reference``, which records the
+        source path without materializing it. ``video.toml``, the provenance record
+        beside the media, is not media.
+        """
+        vdir = self.layout.video_dir(video_id, kind)
+        toml = self.layout.video_toml(video_id, kind)
+        return sorted(p for p in vdir.glob("video.*") if p != toml) if vdir.is_dir() else []
 
     def has_video(self, video_id: str, kind: str = "original") -> bool:
         return self.layout.video_toml(video_id, kind).exists()

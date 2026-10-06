@@ -143,9 +143,8 @@ def export_coco_dataset(
 
     Returns ``(train_json_path, test_json_path)``.
     """
-    import shutil
-
     from .evaluate import read_labels
+    from .util import materialize
 
     dest = Path(dest)
     images_root = dest / "images"
@@ -174,13 +173,5 @@ def export_coco_dataset(
         for frame in (src_dir.iterdir() if src_dir.is_dir() else []):
             if not frame.is_file():
                 continue
-            dst = dst_dir / frame.name
-            if dst.exists() or dst.is_symlink():
-                dst.unlink()
-            if link == "symlink":
-                dst.symlink_to(frame.resolve())
-            elif link == "copy":
-                shutil.copy2(frame, dst)
-            else:
-                raise ValueError(f"link must be symlink|copy, got {link!r}")
+            materialize(frame, dst_dir / frame.name, link)
     return train_path, test_path

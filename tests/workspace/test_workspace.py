@@ -81,6 +81,8 @@ def test_layout_paths():
     assert lay.video_media("v1", kind="processed") == Path("/proj/sources/videos/processed/v1/video.mp4")
     assert lay.frames_dir("v1") == Path("/proj/sources/annotations/v1/frames/original")
     assert lay.frames_dir("v1", "processed") == Path("/proj/sources/annotations/v1/frames/processed")
+    assert lay.staging_dataset_dir("v1") == Path("/proj/.annotate/v1/labeled-data/v1")
+    assert lay.staging_config("v1") == Path("/proj/.annotate/v1/config.yaml")
     assert lay.model_toml("m1") == Path("/proj/models/m1/model.toml")
     assert lay.run_toml("analyze", "r1") == Path("/proj/runs/analyze/r1/run.toml")
     try:
@@ -143,6 +145,78 @@ def test_project_lifecycle():
 
 
 # ------------------------------------------------------------------- model bundle
+def test_materialize_is_safe_and_idempotent():
+    from deeplabcut.workspace.util import materialize
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        src = root / "src.bin"
+        src.write_bytes(b"data")
+        dst = root / "out" / "dst.bin"
+
+        materialize(src, dst)                                   # creates parents, links to the real file
+        assert dst.is_symlink() and dst.resolve() == src.resolve()
+        materialize(src, dst)                                   # idempotent
+        assert dst.is_symlink() and dst.read_bytes() == b"data"
+
+        materialize(dst, src)                                   # source reached *through* the link:
+        materialize(dst, src, "copy")                           # the file must survive untouched
+        assert not src.is_symlink() and src.read_bytes() == b"data"
+
+        materialize(src, dst, "copy")                           # a copy replaces the link itself
+        assert not dst.is_symlink() and dst.read_bytes() == b"data"
+
+        other = root / "other.bin"
+        other.write_bytes(b"other")
+        materialize(src, dst, "symlink")
+        materialize(other, dst, "copy")                         # never written through to src
+        assert src.read_bytes() == b"data" and dst.read_bytes() == b"other"
+
+        loop = root / "loop.bin"
+        loop.symlink_to(loop)
+        for bad in (loop, root / "missing.bin"):
+            try:
+                materialize(bad, root / "x.bin")
+            except FileNotFoundError:
+                pass
+            else:
+                raise AssertionError("expected FileNotFoundError")
+        materialize(src, loop)                                  # a looping link is replaceable
+        assert loop.read_bytes() == b"data"
+
+
+def test_add_video_reregistration_never_damages_sources():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        first = root / "raw" / "first.mp4"
+        second = root / "raw" / "second.avi"
+        first.parent.mkdir()
+        first.write_bytes(b"first")
+        second.write_bytes(b"second")
+        proj = ws.Project.create(root / "ws", task="t", bodyparts=["a"])
+
+        proj.add_video(first, video_id="v", link="symlink")
+        # copying a different source over a symlinked one must not write through the link
+        proj.add_video(second, video_id="v", link="copy", exist_ok=True)
+        assert first.read_bytes() == b"first"
+        media = proj.video_media_files("v")
+        assert [m.name for m in media] == ["video.avi"]          # the stale video.mp4 is gone
+        assert not media[0].is_symlink() and media[0].read_bytes() == b"second"
+
+        # the workspace's own copy cannot be registered onto itself
+        try:
+            proj.add_video(media[0], video_id="v", link="symlink", exist_ok=True)
+        except ValueError as err:
+            assert "own media" in str(err)
+        else:
+            raise AssertionError("expected ValueError")
+        assert media[0].read_bytes() == b"second"
+
+        # a reference keeps no media behind
+        proj.add_video(first, video_id="v", link="reference", exist_ok=True)
+        assert proj.video_media_files("v") == [] and proj.video_record("v").link == "reference"
+
+
 def test_model_bundle_create_open():
     with tempfile.TemporaryDirectory() as d:
         cfg = Path(d) / "pytorch_config.yaml"

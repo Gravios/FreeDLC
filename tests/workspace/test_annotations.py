@@ -88,6 +88,45 @@ def test_copy_frames_symlink_and_missing():
         assert n == 1 and (dest / "img1.png").is_symlink() and not (dest / "missing.png").exists()
 
 
+def test_copy_frames_from_a_view_of_the_destination_is_a_noop():
+    """Regression: a source that is a symlink to the destination must not replace it."""
+    with tempfile.TemporaryDirectory() as d:
+        dest = Path(d) / "frames"
+        dest.mkdir()
+        (dest / "img1.png").write_bytes(b"px")
+        view = Path(d) / "view"
+        view.mkdir()
+        (view / "img1.png").symlink_to(dest / "img1.png")
+        for link in ("symlink", "copy"):
+            assert ann.copy_frames(view, dest, ["img1.png"], link=link) == 1
+            assert not (dest / "img1.png").is_symlink()
+            assert (dest / "img1.png").read_bytes() == b"px"
+
+
+def test_copy_frames_copy_replaces_a_link_instead_of_writing_through_it():
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / "old").mkdir()
+        (root / "new").mkdir()
+        (root / "old" / "img1.png").write_bytes(b"old")
+        (root / "new" / "img1.png").write_bytes(b"new")
+        dest = root / "dest"
+        ann.copy_frames(root / "old", dest, ["img1.png"], link="symlink")
+        ann.copy_frames(root / "new", dest, ["img1.png"], link="copy")
+        assert (root / "old" / "img1.png").read_bytes() == b"old"   # the old source is untouched
+        assert not (dest / "img1.png").is_symlink() and (dest / "img1.png").read_bytes() == b"new"
+
+
+def test_copy_frames_rejects_unknown_link():
+    with tempfile.TemporaryDirectory() as d:
+        try:
+            ann.copy_frames(d, Path(d) / "dest", [], link="hardlink")
+        except ValueError as err:
+            assert "link must be" in str(err)
+        else:
+            raise AssertionError("expected ValueError")
+
+
 def test_find_collected_data_prefers_h5():
     with tempfile.TemporaryDirectory() as d:
         p = Path(d)

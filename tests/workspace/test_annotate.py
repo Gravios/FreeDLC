@@ -461,6 +461,56 @@ def test_parallel_and_serial_produce_same_frames():
         assert parallel == serial          # parallelism changes speed, not output
 
 
+# ------------------------------------------------- frames and links stay intact
+def _sha(path: Path) -> str:
+    import hashlib
+
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+
+def test_annotate_leaves_frames_as_real_files():
+    """Regression: ingesting through the staging view replaced every frame with a self-link."""
+    with tempfile.TemporaryDirectory() as d:
+        proj, vid = _project_with_video(Path(d))
+        before = {p.name: _sha(p) for p in frames_mod.extract_frames(proj, vid, n=6)}
+
+        for _session in range(2):                                  # a second session must still open
+            ann.annotate_video(proj, vid, _launch=_fake_napari_that_labels)
+            frames = sorted(proj.layout.frames_dir(vid, "original").glob("*.png"))
+            assert {p.name: _sha(p) for p in frames} == before     # same files, same pixels
+            assert not any(p.is_symlink() for p in frames)
+            staged = sorted(proj.layout.staging_dataset_dir(vid).glob("*.png"))
+            assert [p.name for p in staged] == sorted(before)
+            assert all(p.is_symlink() and p.is_file() for p in staged)   # links, none dangling
+
+
+
+
+
+def test_staging_repairs_and_prunes_links():
+    with tempfile.TemporaryDirectory() as d:
+        proj, vid = _project_with_video(Path(d))
+        frames = frames_mod.extract_frames(proj, vid, n=6)
+        _, dataset_dir = ann.stage_annotation_project(proj, vid, frames, scorer="gravio")
+        saved = dataset_dir / "CollectedData_gravio.h5"
+        saved.write_bytes(b"labels")
+
+        dangling = dataset_dir / frames[0].name                    # a link that no longer resolves
+        dangling.unlink()
+        dangling.symlink_to(dataset_dir / "gone.png")
+        (dataset_dir / "img9999.png").symlink_to(dataset_dir / "gone.png")   # frame since dropped
+
+        ann.stage_annotation_project(proj, vid, frames, scorer="gravio")
+        staged = sorted(dataset_dir.glob("*.png"))
+        assert [p.name for p in staged] == [f.name for f in frames]
+        assert all(p.resolve() == f.resolve() for p, f in zip(staged, frames, strict=True))
+        assert saved.read_bytes() == b"labels"                     # saved labels are never pruned
+
+
+
+
+
 if __name__ == "__main__":
     passed = 0
     for name, fn in sorted(globals().items()):

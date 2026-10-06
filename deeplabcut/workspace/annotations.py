@@ -19,11 +19,11 @@ reading depend only on pandas and are unit-tested.
 from __future__ import annotations
 
 import logging
-import shutil
 from pathlib import Path
 
 from . import ids
 from .apply import SINGLE_INDIVIDUAL
+from .util import materialize
 
 __all__ = [
     "read_collected_data",
@@ -127,8 +127,12 @@ def copy_frames(src_dir: str | Path, dest_dir: str | Path, images, *, link: str 
     """Materialize the given frame files from ``src_dir`` into ``dest_dir``.
 
     ``link`` is ``"symlink"`` (default) or ``"copy"``. Returns the number of
-    frames materialized; missing frames are warned about and skipped.
+    frames present in ``dest_dir`` afterwards; missing frames are warned about and
+    skipped. A frame that already *is* its destination (``src_dir`` being a view
+    of ``dest_dir``) is left untouched -- see :func:`~.util.materialize`.
     """
+    if link not in ("symlink", "copy"):
+        raise ValueError(f"link must be symlink|copy, got {link!r}")
     src_dir, dest_dir = Path(src_dir), Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
     count = 0
@@ -137,15 +141,7 @@ def copy_frames(src_dir: str | Path, dest_dir: str | Path, images, *, link: str 
         if not src.is_file():
             log.warning("labeled frame not found: %s", src)
             continue
-        dst = dest_dir / name
-        if link == "symlink":
-            if dst.exists() or dst.is_symlink():
-                dst.unlink()
-            dst.symlink_to(src.resolve())
-        elif link == "copy":
-            shutil.copy2(src, dst)
-        else:
-            raise ValueError(f"link must be symlink|copy, got {link!r}")
+        materialize(src, dest_dir / name, link)
         count += 1
     return count
 
@@ -164,13 +160,19 @@ def ingest_video_annotations(
     project,
     video_id: str,
     collected_data: str | Path,
-    frames_dir: str | Path,
+    frames_dir: str | Path | None,
     *,
     link: str = "symlink",
     write: bool = True,
     scale: tuple[float, float] = (1.0, 1.0),
 ):
-    """Ingest one video's annotations: write ``labels.parquet`` + copy frames.
+    """Ingest one video's annotations: write ``labels.parquet`` + materialize frames.
+
+    ``frames_dir`` is where the labeled frames currently live (a legacy
+    ``labeled-data/<video>`` folder); they are linked or copied into the
+    workspace's ``frames/original/`` per ``link``. Pass ``None`` when the frames
+    are already there -- labels made on frames the workspace extracted itself --
+    and nothing is linked or copied; ``link`` is then unused.
 
     ``scale`` multiplies ``(x, y)`` before writing, mapping annotation coordinates
     from the frames they were placed on into another pixel space -- used to convert
@@ -178,7 +180,8 @@ def ingest_video_annotations(
     trains on. It defaults to ``(1.0, 1.0)`` (identity), so callers that annotate and
     train in the same space are unaffected.
 
-    Returns ``(long_df, n_frames_materialized)``.
+    Returns ``(long_df, n_frames)``, the number of labeled frames present in the
+    workspace afterwards.
     """
     long = collected_data_to_long_df(read_collected_data(collected_data))
     scale_x, scale_y = scale
@@ -187,7 +190,15 @@ def ingest_video_annotations(
         long["x"] = long["x"] * scale_x
         long["y"] = long["y"] * scale_y
     images = list(dict.fromkeys(long["image"].tolist()))
-    copied = copy_frames(frames_dir, project.layout.frames_dir(video_id), images, link=link)
+    dest_dir = project.layout.frames_dir(video_id, "original")
+    if frames_dir is None:
+        present = [name for name in images if (dest_dir / name).is_file()]
+        if len(present) < len(images):
+            log.warning("%d labeled frame(s) of %s have no image in %s",
+                        len(images) - len(present), video_id, dest_dir)
+        copied = len(present)
+    else:
+        copied = copy_frames(frames_dir, dest_dir, images, link=link)
     if write:
         write_labels_parquet(long, project.layout.labels_parquet(video_id))
     return long, copied

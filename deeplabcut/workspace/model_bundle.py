@@ -17,14 +17,13 @@ without torch installed.
 """
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 from . import ids
 from .layout import Layout
 from .manifest import read_manifest, write_manifest
 from .schema import ModelCard
-from .util import code_version
+from .util import code_version, materialize
 
 __all__ = ["ModelBundle"]
 
@@ -54,14 +53,9 @@ def _portable_pose_config(cfg: dict) -> dict:
 
 def _place_snapshot(src: str | Path, dst: Path, link: str) -> None:
     """Copy or symlink a snapshot into the bundle (``link`` is ``copy``|``symlink``)."""
-    if dst.exists() or dst.is_symlink():
-        dst.unlink()
-    if link == "symlink":
-        dst.symlink_to(Path(src).resolve())
-    elif link == "copy":
-        shutil.copy2(src, dst)
-    else:
+    if link not in ("copy", "symlink"):
         raise ValueError(f"link must be 'copy' or 'symlink', got {link!r}")
+    materialize(src, dst, link)
 
 
 def _write_portable_pose_config(src: str | Path, dst: Path) -> None:

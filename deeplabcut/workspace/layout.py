@@ -9,15 +9,21 @@ module hard-codes directory names. The layout:
     <root>/
     |- project.toml
     |- sources/                     immutable inputs; the pipeline never writes here
-    |  |- videos/<video_id>/video.mp4 (+ video.toml)
-    |  '- annotations/<video_id>/{frames/, labels.parquet}
+    |  |- videos/<kind>/<video_id>/video.<ext> (+ video.toml)
+    |  '- annotations/<video_id>/{frames/<kind>/, labels.parquet}
     |- models/<model_id>/           portable model bundles
     |  |- model.toml
     |  |- pose.yaml
     |  '- snapshots/
     |- runs/<kind>/<run_id>/        one isolated dir per generating operation
     |  '- run.toml (+ per-video outputs)
-    '- derived/<video_id>/          stable "latest" views into runs/ (symlinks)
+    |- derived/<video_id>/          stable "latest" views into runs/ (symlinks)
+    '- .annotate/<video_id>/        annotator staging: a legacy-shaped *view* of a
+                                    video's frames (symlinks) + the labels saved there
+
+``<kind>`` under ``sources/`` is ``original`` (full-resolution footage, the frames
+annotation happens on) or ``processed`` (the downscaled counterpart the model trains
+and runs on).
 
 Filenames are intentionally boring and stable (``pose.parquet``, ``labels.parquet``,
 ``video.mp4``); the *directory* carries the coordinates. This is a Layout object
@@ -96,6 +102,23 @@ class Layout:
 
     def labels_parquet(self, video_id: str) -> Path:
         return self.annotation_dir(video_id) / "labels.parquet"
+
+    # -- annotator staging ------------------------------------------------
+    #
+    # The external annotator only understands the legacy DLC shape, so `annotate`
+    # stages a `config.yaml` + `labeled-data/<video_id>/` view per video. The frames
+    # in it are symlinks into `frames/original/`; nothing in it is a source of truth
+    # except the `CollectedData_*` the annotator saves there until it is ingested.
+    STAGING_DIRNAME = ".annotate"
+
+    def staging_dir(self, video_id: str) -> Path:
+        return self.root / self.STAGING_DIRNAME / video_id
+
+    def staging_config(self, video_id: str) -> Path:
+        return self.staging_dir(video_id) / "config.yaml"
+
+    def staging_dataset_dir(self, video_id: str) -> Path:
+        return self.staging_dir(video_id) / "labeled-data" / video_id
 
     # -- models -----------------------------------------------------------
     @property

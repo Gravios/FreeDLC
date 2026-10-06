@@ -2,17 +2,21 @@
 
 napari-deeplabcut is built for the legacy DLC layout: it opens a ``config.yaml`` plus a
 ``labeled-data/<dataset>/`` folder of frames, and on save writes ``CollectedData_*`` back
-into that folder. A workspace project has neither shape. Rather than depend on the (not
-yet applied) napari-side patch that teaches it to read ``project.toml`` directly, this
-module bridges from the workspace side, which works with a stock napari-deeplabcut:
+into that folder. A workspace project has neither shape, so this module bridges from the
+workspace side, which works with a stock napari-deeplabcut:
 
-1. Frames are ensured in ``sources/annotations/<video_id>/frames/`` (extracted if absent).
+1. Frames are ensured in ``sources/annotations/<video_id>/frames/original/`` (extracted
+   if absent).
 2. A DLC-shaped *staging* tree is built under ``<root>/.annotate/<video_id>/`` -- a
    synthesized ``config.yaml`` and a ``labeled-data/<video_id>/`` of symlinks to the
    frames -- which is exactly what napari expects to open and save into.
 3. napari is launched on that staging tree (blocking until the window closes).
 4. On close, the ``CollectedData_*`` napari wrote is ingested into
-   ``sources/annotations/<video_id>/labels.parquet`` via the existing ingest path.
+   ``sources/annotations/<video_id>/labels.parquet``.
+
+Data flows one way through the staging tree: frames are *viewed* through it and labels
+are *read* out of it. The frames stay where extraction put them; nothing is ever linked
+or copied back from the staging view into ``sources/``.
 
 The staging tree persists (it is not a temp dir), so if napari or the ingest step fails
 the raw labels are still recoverable and re-running annotate re-ingests them. napari is
@@ -28,6 +32,8 @@ from pathlib import Path
 from . import ids
 from .annotations import find_collected_data, ingest_video_annotations
 from .frames import extract_frames
+from .layout import Layout
+from .util import materialize
 
 log = logging.getLogger(__name__)
 
@@ -40,7 +46,7 @@ __all__ = [
     "annotate_video",
 ]
 
-STAGING_DIRNAME = ".annotate"
+STAGING_DIRNAME = Layout.STAGING_DIRNAME
 
 DEFAULT_DOTSIZE = 6
 DEFAULT_PCUTOFF = 0.6
@@ -95,25 +101,25 @@ def stage_annotation_project(project, video_id: str, frames: list[Path], *, scor
     """Build the DLC-shaped staging tree napari opens; return ``(config_path, dataset_dir)``.
 
     ``<root>/.annotate/<video_id>/`` gets a ``config.yaml`` and a ``labeled-data/<video_id>/``
-    of symlinks to ``frames``. Idempotent: re-linking is safe, and any ``CollectedData_*``
-    napari previously wrote there is left in place so existing labels reload.
+    holding one symlink per frame in ``frames``. Idempotent, and self-correcting: every
+    link is checked against its frame and re-made if it is missing, dangling or points
+    elsewhere, and links to frames no longer in ``frames`` (dropped by a re-extraction)
+    are removed. Only symlinks are ever pruned -- any ``CollectedData_*`` napari
+    previously wrote there is left in place so existing labels reload.
     """
     import yaml
 
-    staging = project.layout.root / STAGING_DIRNAME / video_id
-    dataset_dir = staging / "labeled-data" / video_id
+    dataset_dir = project.layout.staging_dataset_dir(video_id)
     dataset_dir.mkdir(parents=True, exist_ok=True)
 
-    linked = {p.name for p in dataset_dir.glob("*.png")}
+    wanted = {Path(frame).name for frame in frames}
+    for staged in dataset_dir.glob("*.png"):
+        if staged.is_symlink() and staged.name not in wanted:
+            staged.unlink()
     for frame in frames:
-        dst = dataset_dir / frame.name
-        if frame.name in linked:
-            continue
-        if dst.exists() or dst.is_symlink():
-            dst.unlink()
-        dst.symlink_to(Path(frame).resolve())
+        materialize(frame, dataset_dir / Path(frame).name, "symlink")
 
-    config_path = staging / "config.yaml"
+    config_path = project.layout.staging_config(video_id)
     with config_path.open("w", encoding="utf-8") as fh:
         yaml.safe_dump(synthesize_config(project, scorer=scorer), fh, sort_keys=False)
     return config_path, dataset_dir
@@ -139,7 +145,6 @@ def annotate_video(
     *,
     n: int = 20,
     mode: str = "uniform",
-    link: str = "symlink",
     _launch=launch_napari,
 ) -> str:
     """Extract-if-needed, launch napari to annotate ``video``, and ingest labels on close.
@@ -151,6 +156,11 @@ def annotate_video(
     using the project's per-video ``(scale_x, scale_y)``. The scale transform lives here,
     not in napari: napari shows original frames, so writing processed coordinates into a
     CollectedData that references those frames would make it internally inconsistent.
+
+    Only the labels are ingested. The frames napari showed are the workspace's own
+    ``frames/original/`` files, reached through the staging symlinks, so there is
+    nothing to bring in -- and linking them "into" the workspace from the staging
+    view would replace each frame with a symlink to itself.
 
     ``_launch`` is injected so the orchestration can be tested without Qt. Returns the
     resolved ``video_id``.
@@ -169,8 +179,8 @@ def annotate_video(
         log.info("no CollectedData written for %s; nothing to ingest", video_id)
         return video_id
     scale_x, scale_y = project.annotation_scale(video_id)
-    long, copied = ingest_video_annotations(
-        project, video_id, collected, dataset_dir, link=link, scale=(scale_x, scale_y)
+    long, _ = ingest_video_annotations(
+        project, video_id, collected, None, scale=(scale_x, scale_y)
     )
     n_images = len(dict.fromkeys(long["image"].tolist()))
     space = "processed" if (scale_x, scale_y) != (1.0, 1.0) else "original"
