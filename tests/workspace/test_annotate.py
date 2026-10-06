@@ -403,6 +403,36 @@ def test_kmeans_default_stride_is_about_one_per_second():
     assert 10 <= len(touched) <= 60          # a per-second-ish sample, nowhere near 600
 
 
+def test_kmeans_is_temporally_spread_despite_a_burst():
+    # First 7.5% of the clip is a visually extreme "handling" burst; the rest is a
+    # near-static scene. Global appearance k-means bunched picks into the burst
+    # (adjacent-in-time frames); temporal stratification must spread them instead.
+    total, burst_end, n = 1200, 90, 20
+
+    class _BurstCap:
+        def set(self, prop, v):
+            self._i = int(v)
+
+        def read(self):
+            i = self._i
+            if i < burst_end:                          # big fast-moving bright bar -> outliers
+                f = np.full((24, 24, 3), 240, np.uint8)
+                x = (i * 24) // burst_end
+                f[:, max(0, x - 3):x + 3] = 10
+                return True, f
+            f = np.full((24, 24, 3), 90, np.uint8)     # near-static scene
+            f[10:14, 10:14] = 200
+            return True, f
+
+    idx = frames_mod._frame_indices_kmeans(_BurstCap(), total, n, sample_stride=10, fps=30)
+    assert len(idx) >= n - 2                                      # ~n frames, no collapse
+    assert idx == sorted(idx)
+    assert sum(i < burst_end for i in idx) <= 2                  # burst can't dominate (was ~5/20)
+    assert idx[-1] - idx[0] >= 0.75 * total                      # picks span the timeline
+    gaps = [b - a for a, b in zip(idx[:-1], idx[1:], strict=True)]
+    assert max(gaps) <= 3 * (total / n)                          # no giant temporal hole
+
+
 def test_extract_all_parallel_jobs():
     with tempfile.TemporaryDirectory() as d:
         d = Path(d)

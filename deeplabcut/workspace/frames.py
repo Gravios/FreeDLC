@@ -71,22 +71,33 @@ def _frame_indices_uniform(total: int, n: int) -> list[int]:
 def _frame_indices_kmeans(
     video, total: int, n: int, *, resize: int = 32, sample_stride: int | None = None, fps: float | None = None
 ) -> list[int]:
-    """Return ``n`` frame indices chosen as the frames nearest k-means centroids.
+    """Return ``n`` representative frame indices, spread across the whole video.
 
-    Only every ``sample_stride``-th frame is decoded for clustering -- the selection is
-    over that sample, not every frame. This is the dominant cost of kmeans extraction,
-    so the stride is what makes it tractable on long videos: clustering on a coarse
-    sample yields essentially the same representative frames at a fraction of the
-    decode. When ``sample_stride`` is not given it defaults to roughly one frame per
-    second (from ``fps``), which is plenty for choosing ``n`` distinct frames, and is
-    floored so the sample stays large enough to cluster ``n`` groups.
+    Every ``sample_stride``-th frame is decoded and reduced to a small grayscale
+    feature; the sampled (time-ordered) frames are split into ``n`` equal temporal
+    segments and the frame nearest each segment's appearance centroid is kept. That
+    gives one frame per 1/n of the recording -- so the result always spans the video
+    in time -- while still choosing a clean, representative frame within each window
+    rather than a blind evenly-spaced grab.
+
+    This deliberately does *not* cluster globally by appearance. Global k-means lets a
+    brief but visually extreme episode (handling at the start or end, a light change,
+    the animal on the lens) claim a disproportionate share of the clusters: those
+    outlier frames each win a centroid while the near-identical majority collapses
+    into a few, so the selection bunches up in time -- the opposite of useful
+    annotation coverage. Stratifying by time first bounds every window's share to one
+    frame. Appearance still chooses *which* frame within a window.
+
+    Only every ``sample_stride``-th frame is decoded, which is the dominant cost on a
+    long video. When ``sample_stride`` is not given it defaults to roughly one frame
+    per second (from ``fps``), floored so the sample stays at least a few times ``n``.
     """
     import cv2
     import numpy as np
 
     if sample_stride is None:
         per_second = int(round(fps)) if fps and fps > 0 else 30
-        # ~1 fps, but never so coarse that the sample can't yield n clusters
+        # ~1 fps, but never so coarse that the sample has fewer than a few per segment
         sample_stride = max(1, min(per_second, total // max(n * 3, 1) or 1))
 
     sampled_idx: list[int] = []
@@ -103,17 +114,18 @@ def _frame_indices_kmeans(
     if len(feats) <= n:
         return sorted(sampled_idx) or _frame_indices_uniform(total, n)
 
-    from sklearn.cluster import KMeans
-
+    # The sampled frames are already time-ordered; split them into n equal temporal
+    # segments and keep each segment's medoid (frame nearest the segment mean).
     matrix = np.vstack(feats)
-    km = KMeans(n_clusters=n, n_init=10, random_state=0).fit(matrix)
+    bounds = np.linspace(0, len(sampled_idx), n + 1).astype(int)
     chosen: list[int] = []
-    for c in range(n):
-        members = np.where(km.labels_ == c)[0]
-        if members.size == 0:
+    for a, b in zip(bounds[:-1], bounds[1:], strict=True):
+        if b <= a:
             continue
-        d = np.linalg.norm(matrix[members] - km.cluster_centers_[c], axis=1)
-        chosen.append(sampled_idx[members[int(np.argmin(d))]])
+        segment = matrix[a:b]
+        center = segment.mean(axis=0)
+        j = a + int(np.argmin(np.linalg.norm(segment - center, axis=1)))
+        chosen.append(sampled_idx[j])
     return sorted(dict.fromkeys(chosen))
 
 
