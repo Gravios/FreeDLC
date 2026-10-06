@@ -170,6 +170,43 @@ def test_export_uses_original_frames_without_processed():
         assert staged.resolve() == proj.layout.frames_dir("v1", "original").resolve() / "img0004.png"
 
 
+def test_image_sizes_and_evaluation_read_the_label_space_frames():
+    # the same rule as the export: anything that reads frames by label must take the
+    # set the labels are in, or sizes/predictions describe images of another resolution.
+    from PIL import Image
+
+    from deeplabcut.workspace import evaluate, native_train
+
+    with tempfile.TemporaryDirectory() as d:
+        proj = ws.Project.create(Path(d) / "ws", task="reach", bodyparts=["snout", "paw"])
+        _register_dims(proj, "v1", "original", 1920, 1080)
+        _register_dims(proj, "v1", "processed", 192, 108)
+        for kind, size in (("original", (1920, 1080)), ("processed", (192, 108))):
+            fdir = proj.layout.frames_dir("v1", kind)
+            fdir.mkdir(parents=True)
+            Image.new("RGB", size).save(fdir / "img0004.png")
+
+        assert native_train.probe_image_dims(proj, ["v1"]) == {"v1/img0004.png": (192, 108)}
+
+        df = _labels(["img0004.png"], ["single"], ["snout", "paw"])
+        seen = []
+
+        class _Card:
+            model_id = "m"
+
+        class _Bundle:
+            card = _Card()
+
+        real = evaluate.infer_on_frames
+        evaluate.infer_on_frames = lambda bundle, frames_dir, images: seen.append(Path(frames_dir)) or df
+        try:
+            evaluate.evaluate_model(proj, _Bundle(), videos=["v1"], labels_provider=lambda p, v: df,
+                                    write=False)
+        finally:
+            evaluate.infer_on_frames = real
+        assert seen == [proj.layout.frames_dir("v1", "processed")]
+
+
 # --------------------------------------------------------- native driver (lazy)
 def test_native_train_imports_lazily():
     import ast

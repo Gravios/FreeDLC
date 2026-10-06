@@ -24,12 +24,16 @@ __all__ = ["train_in_workspace", "probe_image_dims"]
 
 
 def probe_image_dims(project, video_ids) -> dict[str, tuple[int, int]]:
-    """Map ``"<video_id>/<frame>" -> (width, height)`` by reading frame headers (PIL)."""
+    """Map ``"<video_id>/<frame>" -> (width, height)`` by reading frame headers (PIL).
+
+    Reads the frame set the labels are in (the one the dataset export stages), so
+    the sizes describe the images the trainer actually loads.
+    """
     from PIL import Image
 
     dims: dict[str, tuple[int, int]] = {}
     for vid in video_ids:
-        frames = project.layout.frames_dir(vid)
+        frames = project.label_frames_dir(vid)
         if not frames.is_dir():
             continue
         for f in sorted(frames.iterdir()):

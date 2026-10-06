@@ -157,17 +157,11 @@ def export_coco_dataset(
     train_path = write_coco_json(train, dest / "train.json")
     test_path = write_coco_json(test, dest / "test.json")
 
-    # materialize frames at dest/images/<video_id>/<image>
-    #
-    # The frames must be in the same pixel space as the labels. ``annotate``
-    # scales coordinates into the processed space whenever a processed counterpart
-    # gives a non-identity scale, so those labels pair with the processed frames,
-    # not the original ones they were drawn on. Using the same predicate here keeps
-    # frames and coordinates consistent; without a scale the labels stay in original
-    # space and the original frames are correct.
+    # materialize frames at dest/images/<video_id>/<image>, taken from the frame set
+    # that is in the labels' pixel space (frames/processed when annotations were
+    # scaled, frames/original otherwise) so frames and coordinates stay consistent.
     for vid in video_ids:
-        scaled = project.annotation_scale(vid) != (1.0, 1.0)
-        src_dir = project.layout.frames_dir(vid, "processed" if scaled else "original")
+        src_dir = project.label_frames_dir(vid)
         dst_dir = images_root / vid
         dst_dir.mkdir(parents=True, exist_ok=True)
         for frame in (src_dir.iterdir() if src_dir.is_dir() else []):

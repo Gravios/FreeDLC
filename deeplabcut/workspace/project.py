@@ -220,6 +220,21 @@ class Project:
             return (1.0, 1.0)
         return (proc.width / orig.width, proc.height / orig.height)
 
+    def label_frames_kind(self, video_id: str) -> str:
+        """Which frame set is in the same pixel space as ``labels.parquet``.
+
+        ``annotate`` scales coordinates into the processed space whenever a
+        processed counterpart gives a non-identity scale, so those labels pair with
+        ``frames/processed/``, not the original frames they were drawn on; without
+        a scale they stay in original space. Everything that reads frames *by label*
+        (dataset export, image sizes, evaluation) must use this, not a fixed kind.
+        """
+        return "processed" if self.annotation_scale(video_id) != (1.0, 1.0) else "original"
+
+    def label_frames_dir(self, video_id: str) -> Path:
+        """The frames directory matching ``labels.parquet`` (see :meth:`label_frames_kind`)."""
+        return self.layout.frames_dir(video_id, self.label_frames_kind(video_id))
+
     def annotated_videos(self) -> list[str]:
         """Video ids that have ingested annotations (``labels.parquet``), sorted."""
         d = self.layout.annotations_dir

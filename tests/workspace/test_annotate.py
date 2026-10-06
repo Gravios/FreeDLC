@@ -578,6 +578,7 @@ def test_processed_frames_backfilled_under_original_names():
         assert frames_mod.extract_frames(proj, vid, n=5) == orig   # selection untouched
         proc = sorted(proj.layout.frames_dir(vid, "processed").glob("*.png"))
         assert [p.name for p in proc] == [p.name for p in orig]
+        assert proj.label_frames_dir(vid) == proj.layout.frames_dir(vid, "processed")
 
 
 def test_extract_overwrite_never_writes_through_a_link():

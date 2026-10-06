@@ -87,7 +87,7 @@ def evaluate_model(
     if predictions_provider is None:
         def predictions_provider(project, video_id, ground_truth):
             images = list(dict.fromkeys(ground_truth["image"].tolist()))
-            return infer_on_frames(bundle, project.layout.frames_dir(video_id), images)
+            return infer_on_frames(bundle, project.label_frames_dir(video_id), images)
 
     videos = list(videos) if videos is not None else project.annotated_videos()
     run = project.new_run("evaluate", model_id=bundle.card.model_id, inputs=videos)
