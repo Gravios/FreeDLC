@@ -284,6 +284,13 @@ annotations, in pixels. It scores on the frame set the model was trained on,
 read from `model.toml`; the annotations are converted to match. The metrics are
 printed and stored on the run and the model card.
 
+The report gives both the mean and the median error, overall and per marker
+(`per_bodypart`, `per_bodypart_median`). Read them together: pose errors are
+heavy-tailed, so a marker that is exact in most frames and lost in a few shows a
+small median and a large mean. `--pck 20` adds the share of predictions within
+20 px, overall and per marker (`per_bodypart_pck`), which says how often a marker
+is usable.
+
 `--frames original|processed` overrides the frame set. Errors are then in that
 set's pixels, so numbers from different frame sets are not directly comparable:
 the same miss is 2x larger in pixels on frames twice the size.

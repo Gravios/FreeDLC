@@ -53,6 +53,22 @@ def test_pose_error_math():
     assert m["pck"] == 1.0                             # both within 6px
 
 
+def test_pose_error_reports_medians_and_per_bodypart_pck():
+    """One lost prediction must not hide that a marker is otherwise exact."""
+    from deeplabcut.workspace.metrics import pose_error
+
+    images = [f"i{k}" for k in range(5)]
+    gt = pd.DataFrame({"image": images * 2, "individual": "single",
+                       "bodypart": ["snout"] * 5 + ["paw"] * 5, "x": 100.0, "y": 100.0})
+    # snout: 2 px off in four frames, 500 px off in one; paw: 10 px off everywhere
+    pred = gt.assign(x=[102.0, 102.0, 102.0, 102.0, 600.0] + [110.0] * 5, likelihood=0.9)
+    m = pose_error(pred, gt, pcutoff=0.6, pck_threshold=20.0)
+    assert abs(m["per_bodypart"]["snout"] - 101.6) < 1e-9          # the mean is dominated by one miss
+    assert m["per_bodypart_median"] == {"paw": 10.0, "snout": 2.0}  # the median is not
+    assert m["per_bodypart_pck"] == {"paw": 1.0, "snout": 0.8}
+    assert m["median_error"] == 10.0 and m["median_error_confident"] == 10.0 and m["pck"] == 0.9
+
+
 def test_pose_error_ignores_unlabeled():
     gt = pd.DataFrame({"image": ["i1"], "individual": ["single"], "bodypart": ["snout"],
                        "x": [float("nan")], "y": [float("nan")]})
