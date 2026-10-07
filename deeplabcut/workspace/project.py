@@ -269,6 +269,12 @@ class Project:
         record = self.labels_record(video_id)
         if frames == record.space:
             return (1.0, 1.0)
+        if not self.has_video(video_id, "original"):
+            # the scale is the ratio of the two videos; without the original there is none
+            raise ValueError(
+                f"{video_id}: its labels are in {record.space} pixels and no original video is "
+                f"registered under this id, so they cannot be converted"
+            )
         if frames == "processed":
             if not self.has_video(video_id, "processed"):
                 raise ValueError(f"{video_id}: no processed video is registered")
@@ -293,10 +299,19 @@ class Project:
             raise ValueError(
                 f"cannot use the {frames} frames for {len(problems)} video(s):\n  "
                 + "\n  ".join(problems)
+                + "\n`dlc-ws videos <project>` shows what is registered and labeled under each id"
                 + "\nregister the missing counterpart "
                 "(`dlc-ws add-video <project> <video> --processed --video-id <id>`) "
                 f"or choose `--frames {other}`"
             )
+
+    def video_ids(self) -> list[str]:
+        """Every id the project knows: registered as either kind, or holding annotations."""
+        ids_ = set(self.videos("original")) | set(self.videos("processed")) | set(self.annotated_videos())
+        d = self.layout.annotations_dir
+        if d.exists():
+            ids_ |= {p.name for p in d.iterdir() if p.is_dir()}
+        return sorted(ids_)
 
     def annotated_videos(self) -> list[str]:
         """Video ids that have ingested annotations (``labels.parquet``), sorted."""

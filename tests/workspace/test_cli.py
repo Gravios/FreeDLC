@@ -185,6 +185,52 @@ def test_videos_command():
         assert code == 0 and "clip1" in out
 
 
+def test_videos_table_shows_pairing_labels_and_problems():
+    from deeplabcut.workspace.manifest import write_manifest
+    from deeplabcut.workspace.schema import LabelsRecord, VideoRecord
+
+    with tempfile.TemporaryDirectory() as d:
+        proj = ws.Project.create(Path(d) / "ws", task="reach", bodyparts=["snout"])
+        lay = proj.layout
+
+        def register(vid, kind, w, h):
+            rec = VideoRecord(video_id=vid, source_path=f"{kind}.mp4", width=w, height=h, link="reference")
+            write_manifest(lay.video_toml(vid, kind), rec.to_dict())
+
+        def label(vid):
+            lay.annotation_dir(vid).mkdir(parents=True, exist_ok=True)
+            lay.labels_parquet(vid).write_bytes(b"")
+
+        register("paired", "original", 1920, 1080)
+        register("paired", "processed", 192, 108)
+        label("paired")
+        write_manifest(lay.labels_toml("paired"),
+                       LabelsRecord(video_id="paired", space="processed", scale_x=0.1, scale_y=0.1).to_dict())
+        fdir = lay.frames_dir("paired", "original")
+        fdir.mkdir(parents=True)
+        (fdir / "img1.png").write_bytes(b"px")
+        (fdir / "img2.png").symlink_to(fdir / "img2.png")           # a link to itself
+
+        register("small-192x108", "processed", 192, 108)             # registered under its own id
+        label("small-192x108")                                       # ...with labels, but no original
+
+        code, out = _run(["videos", str(proj.root)])
+        assert code == 0
+        rows = {line.split()[0]: line.split() for line in out.splitlines() if not line.startswith("  !")}
+        assert rows["paired"][1:] == ["1920x1080", "192x108", "processed", "1/0"]
+        assert rows["small-192x108"][1:] == ["-", "192x108", "original?", "0/0"]   # "?": space inferred
+        assert "! paired: 1 original frame(s) are broken links" in out
+        assert "! small-192x108: has labels but no original video is registered under this id" in out
+        assert "! small-192x108: processed video has no original with the same id" in out
+
+        # training on it fails with a message, not a traceback
+        code, out = _run(["train", str(proj.root), "--epochs", "1"])
+        assert code == 2
+        assert "small-192x108: its labels are in original pixels and no original video is registered" in out
+        assert "dlc-ws videos" in out
+        assert proj.runs("train") == []
+
+
 def test_no_command_prints_help():
     code, _ = _run([])
     assert code == 2

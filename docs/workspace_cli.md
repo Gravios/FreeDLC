@@ -61,8 +61,22 @@ dlc-ws add-video ws session1-320x240.mp4 --processed --video-id session1
 Without `--video-id`, the second file would be registered as a separate video
 `session1-320x240` and nothing would connect it to `session1`.
 
-`dlc-ws videos <project>` lists the registered ids; the two directories under
-`sources/videos/` show which of them have a processed counterpart.
+`dlc-ws videos <project>` shows, for every id, what is registered, labeled and
+extracted under it, and points out what does not fit together:
+
+```text
+video id          original   processed  labels      frames o/p
+session1          1920x1080  192x108    processed   20/20
+session2          1920x1080  -          original    20/0
+session3-192x108  -          192x108    original?   0/0
+  ! session3-192x108: has labels but no original video is registered under this id
+  ! session3-192x108: processed video has no original with the same id (see `add-video --video-id`)
+```
+
+`labels` is the pixel space the labels are stored in; a trailing `?` means there
+is no `labels.toml` and the space is inferred from the current pairing.
+`frames o/p` counts the readable frames in `frames/original/` and
+`frames/processed/`.
 
 `--link` controls how the media is stored: `symlink` (default), `copy`, or
 `reference` (record the path only). `--exist-ok` re-registers an id; it replaces
@@ -369,9 +383,11 @@ images than the dataset holds.
 
 ### `cannot use the processed frames for N video(s)`
 
-The default `--frames processed` needs a processed counterpart for every
-annotated video. Register one under the same id (`--processed --video-id`), or
-train with `--frames original`. Check for a downscaled file that was
+The default `--frames processed` needs, for every annotated video, an original
+and a processed video registered under the same id. The message names each video
+and what is missing; `dlc-ws videos <project>` shows the whole picture. Register
+the missing counterpart under the same id (`--processed --video-id`), or train
+with `--frames original`. The usual cause is a downscaled file that was
 registered under its own id instead of the original's.
 
 ### `N of M labeled frame(s) have no readable image ... left out of training`

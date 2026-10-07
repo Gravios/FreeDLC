@@ -389,11 +389,54 @@ def cmd_add_video(args) -> int:
     return 0
 
 
+def _video_row(project, vid: str) -> tuple[list[str], list[str]]:
+    """One row of the `videos` table for ``vid``, and the problems found with it."""
+    lay, problems = project.layout, []
+
+    def size(kind: str) -> str:
+        if not project.has_video(vid, kind):
+            return "-"
+        rec = project.video_record(vid, kind)
+        return f"{rec.width}x{rec.height}" if rec.width and rec.height else "?"
+
+    def frames(kind: str) -> str:
+        d = lay.frames_dir(vid, kind)
+        entries = sorted(d.glob("*.png")) if d.is_dir() else []
+        broken = sum(1 for f in entries if not f.is_file())
+        if broken:
+            problems.append(f"{broken} {kind} frame(s) are broken links (run `dlc-ws extract-frames {vid}`)")
+        return str(len(entries) - broken)
+
+    original, processed = size("original"), size("processed")
+    labels = "-"
+    if lay.labels_parquet(vid).exists():
+        record = project.labels_record(vid)
+        # "?" marks a space inferred from the current pairing: no labels.toml was written
+        labels = record.space + ("" if lay.labels_toml(vid).exists() else "?")
+        if original == "-":
+            problems.append("has labels but no original video is registered under this id")
+    if original == "-" and processed != "-":
+        problems.append("processed video has no original with the same id (see `add-video --video-id`)")
+    return [vid, original, processed, labels, f"{frames('original')}/{frames('processed')}"], problems
+
+
 def cmd_videos(args) -> int:
+    """List every video id with what is registered, labeled and extracted under it."""
     project = Project.open(args.project)
-    annotated = set(project.annotated_videos())
-    for vid in project.videos():
-        print(f"{vid}{'  [annotated]' if vid in annotated else ''}")
+    header = ["video id", "original", "processed", "labels", "frames o/p"]
+    rows, notes = [], []
+    for vid in project.video_ids():
+        row, problems = _video_row(project, vid)
+        rows.append(row)
+        notes += [f"  ! {vid}: {problem}" for problem in problems]
+    if not rows:
+        print("no videos registered")
+        return 0
+    widths = [max(len(r[i]) for r in [header, *rows]) for i in range(len(header))]
+    for row in [header, *rows]:
+        print("  ".join(cell.ljust(width) for cell, width in zip(row, widths, strict=True)).rstrip())
+    for note in notes:
+        print(note)
     return 0
 
 
@@ -646,7 +689,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="frame-selection mode when extracting (default: uniform)")
     p.set_defaults(func=cmd_annotate)
 
-    p = sub.add_parser("videos", help="list registered videos")
+    p = sub.add_parser("videos", help="list video ids with their registered videos, labels and frames")
     p.add_argument("project")
     p.set_defaults(func=cmd_videos)
 
