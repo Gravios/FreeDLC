@@ -94,6 +94,10 @@ def test_train_model_success():
         assert len(runs) == 1 and runs[0].manifest().status == "finished"
         assert runs[0].manifest().params["epochs"] == 1
         assert proj.models() == [bundle.card.model_id]
+        # the frame set trained on is recorded on the run and the model card
+        assert ws.TrainConfig().frames == "processed"
+        assert runs[0].manifest().params["frames"] == "processed"
+        assert ws.ModelBundle.open(proj.layout.model_dir(bundle.card.model_id)).card.frames == "processed"
 
 
 def test_train_model_backend_failure_marks_run_failed():
@@ -157,6 +161,55 @@ def test_evaluate_model_with_injected_providers():
         assert run.manifest().model_id == "m1"
         # metrics were written back onto the model card
         assert abs(ws.ModelBundle.open(proj.layout.model_dir("m1")).card.metrics["mean_error"] - 2.5) < 1e-9
+
+
+def test_evaluate_scores_on_the_frames_the_model_was_trained_on():
+    from deeplabcut.workspace import evaluate
+    from deeplabcut.workspace.manifest import write_manifest
+    from deeplabcut.workspace.schema import LabelsRecord, VideoRecord
+
+    with tempfile.TemporaryDirectory() as d:
+        proj = ws.Project.create(Path(d) / "ws", task="reach", bodyparts=["snout", "paw"])
+        for kind, (w, h) in (("original", (1920, 1080)), ("processed", (192, 108))):
+            rec = VideoRecord(video_id="v1", source_path=f"{kind}.mp4", width=w, height=h, link="reference")
+            write_manifest(proj.layout.video_toml("v1", kind), rec.to_dict())
+        write_manifest(proj.layout.labels_toml("v1"),
+                       LabelsRecord(video_id="v1", space="processed", scale_x=0.1, scale_y=0.1).to_dict())
+
+        def bundle_trained_on(frames, model_id):
+            return ws.ModelBundle.from_train_dir(
+                proj.layout.model_dir(model_id), _fake_train_dir(Path(d) / model_id), model_id=model_id,
+                frames=frames)
+
+        gt = pd.DataFrame({"image": ["i1", "i1"], "individual": ["single", "single"],
+                           "bodypart": ["snout", "paw"], "x": [10.0, 20.0], "y": [5.0, 5.0]})
+        seen = []
+
+        def fake_infer(bundle, frames_dir, images):
+            seen.append(Path(frames_dir))
+            return gt.assign(x=gt["x"] * factor, y=gt["y"] * factor, likelihood=1.0)
+
+        real, evaluate.infer_on_frames = evaluate.infer_on_frames, fake_infer
+        try:
+            factor = 10.0   # a model trained on originals predicts in original pixels
+            m = ws.evaluate_model(proj, bundle_trained_on("original", "m-orig"), videos=["v1"],
+                                  labels_provider=lambda p, v: gt, write=False)
+            assert m["mean_error"] < 1e-9                       # ground truth was scaled up to match
+            factor = 1.0
+            m = ws.evaluate_model(proj, bundle_trained_on("processed", "m-proc"), videos=["v1"],
+                                  labels_provider=lambda p, v: gt, write=False)
+            assert m["mean_error"] < 1e-9
+            # an explicit choice overrides the card
+            ws.evaluate_model(proj, bundle_trained_on("processed", "m-proc2"), videos=["v1"],
+                              labels_provider=lambda p, v: gt, write=False, frames="original")
+        finally:
+            evaluate.infer_on_frames = real
+        lay = proj.layout
+        assert seen == [lay.frames_dir("v1", "original"), lay.frames_dir("v1", "processed"),
+                        lay.frames_dir("v1", "original")]
+        # each run records the set it scored on (run ids made in one second are unordered)
+        recorded = sorted(run.manifest().params["frames"] for run in proj.runs("evaluate"))
+        assert recorded == ["original", "original", "processed"]
 
 
 def test_infer_on_frames_drives_the_runners():

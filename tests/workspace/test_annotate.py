@@ -193,6 +193,8 @@ def test_annotate_video_full_loop_ingests_labels():
         df = pd.read_parquet(labels)
         assert set(df["bodypart"]) == set(BODYPARTS)
         assert (proj.layout.frames_dir(vid)).is_dir()
+        assert proj.labels_record(vid).space == "original"       # no processed video: unscaled
+        assert proj.layout.labels_toml(vid).is_file()
 
 
 def test_annotate_video_no_labels_saved_is_graceful():
@@ -280,6 +282,10 @@ def test_annotate_scales_labels_into_processed_space():
         # 100*0.5 = 50, 80*0.25 = 20  -- anisotropic scale applied correctly
         assert (df["x"].dropna().round(6) == 50.0).all()
         assert (df["y"].dropna().round(6) == 20.0).all()
+        # ...and the space the labels are now in is recorded with the scale used
+        rec = proj.labels_record(vid)
+        assert proj.layout.labels_toml(vid).is_file()
+        assert (rec.space, rec.scale_x, rec.scale_y) == ("processed", 0.5, 0.25)
 
 
 def _fake_napari_at(config_path: Path, dataset_dir: Path, *, x: float, y: float):

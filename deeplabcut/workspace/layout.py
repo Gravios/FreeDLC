@@ -10,7 +10,7 @@ module hard-codes directory names. The layout:
     |- project.toml
     |- sources/                     immutable inputs; the pipeline never writes here
     |  |- videos/<kind>/<video_id>/video.<ext> (+ video.toml)
-    |  '- annotations/<video_id>/{frames/<kind>/, labels.parquet}
+    |  '- annotations/<video_id>/{frames/<kind>/, labels.parquet, labels.toml}
     |- models/<model_id>/           portable model bundles
     |  |- model.toml
     |  |- pose.yaml
@@ -102,6 +102,9 @@ class Layout:
 
     def labels_parquet(self, video_id: str) -> Path:
         return self.annotation_dir(video_id) / "labels.parquet"
+
+    def labels_toml(self, video_id: str) -> Path:
+        return self.annotation_dir(video_id) / "labels.toml"
 
     # -- annotator staging ------------------------------------------------
     #

@@ -32,6 +32,7 @@ from .apply import (
     sidecar_for_parquet,
 )
 from .evaluate import evaluate_model
+from .layout import Layout
 from .migrate import migrate_project
 from .model_bundle import ModelBundle
 from .project import Project
@@ -514,17 +515,26 @@ def cmd_train(args) -> int:
     project = Project.open(args.project)
     config = TrainConfig(net_type=args.net, epochs=args.epochs, batch_size=args.batch_size,
                          detector_epochs=args.detector_epochs, device=args.device,
-                         train_fraction=args.train_fraction, seed=args.seed)
+                         train_fraction=args.train_fraction, seed=args.seed, frames=args.frames)
+    try:  # before a run is opened: a frame set the labels cannot be put on
+        project.check_frames(project.annotated_videos(), config.frames)
+    except ValueError as err:
+        print(err)
+        return 2
     bundle = train_model(project, config, WorkspaceTrainBackend())
-    print(f"trained -> models/{bundle.card.model_id}")
+    print(f"trained -> models/{bundle.card.model_id} ({config.frames} frames)")
     return 0
 
 
 def cmd_evaluate(args) -> int:
     project = Project.open(args.project)
     bundle = ModelBundle.from_project(project, args.model_id)
-    metrics = evaluate_model(project, bundle, videos=args.videos or None,
-                             pcutoff=args.pcutoff, pck_threshold=args.pck)
+    try:
+        metrics = evaluate_model(project, bundle, videos=args.videos or None,
+                                 pcutoff=args.pcutoff, pck_threshold=args.pck, frames=args.frames)
+    except ValueError as err:
+        print(err)
+        return 2
     print(json.dumps(metrics, indent=2))
     return 0
 
@@ -684,6 +694,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--train-fraction", type=float, default=0.95, dest="train_fraction")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device")
+    p.add_argument("--frames", choices=Layout.VIDEO_KINDS[::-1], default="processed",
+                   help="frame set to train on; labels are converted into its pixel space "
+                        "(default: processed, the resolution inference runs at)")
     p.set_defaults(func=cmd_train)
 
     p = sub.add_parser("evaluate", help="evaluate a model against annotations")
@@ -692,6 +705,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--videos", nargs="*")
     p.add_argument("--pcutoff", type=float, default=0.6)
     p.add_argument("--pck", type=float, default=None)
+    p.add_argument("--frames", choices=Layout.VIDEO_KINDS[::-1], default=None,
+                   help="frame set to score on (default: the one the model was trained on)")
     p.set_defaults(func=cmd_evaluate)
 
     return parser

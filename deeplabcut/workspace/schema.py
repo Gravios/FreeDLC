@@ -33,6 +33,7 @@ __all__ = [
     "now_iso",
     "ProjectConfig",
     "VideoRecord",
+    "LabelsRecord",
     "ModelCard",
     "RunManifest",
 ]
@@ -121,6 +122,38 @@ class VideoRecord:
 
 
 @dataclass
+class LabelsRecord:
+    """``labels.toml`` -- which pixel space a video's ``labels.parquet`` is in.
+
+    Annotation happens on original-resolution frames; when the video has a processed
+    counterpart the coordinates are scaled into its pixel space on the way in.
+    ``space`` records which of the two the stored coordinates are in, and
+    ``scale_x``/``scale_y`` the original->processed factors applied (``1.0`` when
+    nothing was scaled), so the labels can be mapped to either frame set later
+    without guessing from whichever videos happen to be registered at that time.
+    """
+
+    video_id: str
+    space: str = "original"  # original | processed
+    scale_x: float = 1.0
+    scale_y: float = 1.0
+    created: str = field(default_factory=now_iso)
+    schema_version: int = SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        if self.space not in ("original", "processed"):
+            raise ValueError(f"label space must be original|processed, got {self.space!r}")
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> LabelsRecord:
+        _require(d, "video_id", "space", ctx="labels")
+        return cls(**{f.name: d[f.name] for f in dataclasses.fields(cls) if f.name in d})
+
+    def to_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+
+@dataclass
 class ModelCard:
     """``model.toml`` -- a portable, project-optional trained model.
 
@@ -145,6 +178,8 @@ class ModelCard:
     skeleton: list[list[str]] = field(default_factory=list)
     pose_onnx: str | None = None
     detector_onnx: str | None = None
+    #: frame set the model was trained on (original | processed); ``None`` when unknown
+    frames: str | None = None
     schema_version: int = SCHEMA_VERSION
 
     def __post_init__(self) -> None:

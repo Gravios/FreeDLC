@@ -148,6 +148,7 @@ def export_coco_dataset(
     link: str = "symlink",
     image_dims: dict | None = None,
     labels_provider=None,
+    frames: str | None = None,
 ) -> tuple[Path, Path]:
     """Stage a COCO dataset for training under ``dest``.
 
@@ -158,12 +159,18 @@ def export_coco_dataset(
     ``labels_provider(project, video_id) -> long DataFrame`` defaults to reading
     ``labels.parquet`` (pyarrow, lazy).
 
+    ``frames`` picks the frame set the dataset is built from, for every video:
+    ``"processed"`` or ``"original"``. Label coordinates are converted into that
+    pixel space, so either set can be trained on whichever one the labels are
+    stored in. ``None`` uses, per video, the set the labels are stored in.
+
     Returns ``(train_json_path, test_json_path)``.
 
     Raises:
-        ValueError: if no labeled frame has a readable image.
+        ValueError: if a video's labels cannot be put on ``frames`` (see
+            :meth:`Project.check_frames`), or no labeled frame has a readable image.
     """
-    from .evaluate import read_labels
+    from .evaluate import read_labels, scale_labels
     from .util import materialize
 
     dest = Path(dest)
@@ -171,9 +178,11 @@ def export_coco_dataset(
     labels_provider = labels_provider or read_labels
     video_ids = list(video_ids) if video_ids is not None else project.annotated_videos()
 
-    # Stage each labeled frame at dest/images/<video_id>/<image>, taken from the frame
-    # set that is in the labels' pixel space (frames/processed when annotations were
-    # scaled, frames/original otherwise) so frames and coordinates stay consistent.
+    project.check_frames(video_ids, frames)
+
+    # Stage each labeled frame at dest/images/<video_id>/<image> from the requested
+    # frame set (by default the one the labels are stored in), and bring the label
+    # coordinates into that set's pixel space, so frames and coordinates agree.
     #
     # Labels whose frame is not a readable file are left out of the dataset, and said
     # so here with the remedy: the loader would drop them anyway, but only after the
@@ -181,8 +190,8 @@ def export_coco_dataset(
     # nothing about where the frame should have come from.
     labels_by_video = {}
     for vid in video_ids:
-        df = labels_provider(project, vid)
-        src_dir = project.label_frames_dir(vid)
+        df = scale_labels(labels_provider(project, vid), project.labels_scale_to(vid, frames))
+        src_dir = project.layout.frames_dir(vid, frames or project.label_frames_kind(vid))
         names = list(dict.fromkeys(df["image"].tolist()))
         present = [name for name in names if (src_dir / name).is_file()]
         for name in present:

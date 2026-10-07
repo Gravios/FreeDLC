@@ -20,7 +20,7 @@ import pandas as pd
 from deeplabcut import workspace as ws
 from deeplabcut.workspace import coco_export
 from deeplabcut.workspace.manifest import write_manifest
-from deeplabcut.workspace.schema import ProjectConfig, VideoRecord
+from deeplabcut.workspace.schema import LabelsRecord, ProjectConfig, VideoRecord
 
 
 def _labels(images, individuals, bodyparts, fill=1.0):
@@ -241,6 +241,89 @@ def test_image_sizes_and_evaluation_read_the_label_space_frames():
         finally:
             evaluate.infer_on_frames = real
         assert seen == [proj.layout.frames_dir("v1", "processed")]
+
+
+# ------------------------------------------------------ choosing the frame set
+def _paired_project(root: Path, *, space: str | None):
+    """A 1920x1080 / 192x108 pair with one frame per set and, optionally, a labels record."""
+    proj = ws.Project.create(root / "ws", task="reach", bodyparts=["snout", "paw"])
+    _register_dims(proj, "v1", "original", 1920, 1080)
+    _register_dims(proj, "v1", "processed", 192, 108)
+    for kind, tag in (("original", b"ORIG"), ("processed", b"PROC")):
+        fdir = proj.layout.frames_dir("v1", kind)
+        fdir.mkdir(parents=True)
+        (fdir / "img0004.png").write_bytes(tag)
+    if space is not None:
+        scale = (0.1, 0.1) if space == "processed" else (1.0, 1.0)
+        rec = LabelsRecord(video_id="v1", space=space, scale_x=scale[0], scale_y=scale[1])
+        write_manifest(proj.layout.labels_toml("v1"), rec.to_dict())
+    return proj
+
+
+def _export(proj, dest: Path, df, frames):
+    train_json, _ = coco_export.export_coco_dataset(
+        proj, dest, video_ids=["v1"], train_fraction=1.0, seed=0,
+        labels_provider=lambda p, v: df, frames=frames,
+    )
+    coco = json.loads(train_json.read_text())
+    staged = dest / "images" / "v1" / "img0004.png"
+    return staged.read_bytes(), coco["annotations"][0]["keypoints"][:2]
+
+
+def test_export_frames_converts_labels_into_the_chosen_set():
+    with tempfile.TemporaryDirectory() as d:
+        # labels stored in processed space (annotate scaled them): 96, 54 on a 192x108 frame
+        proj = _paired_project(Path(d), space="processed")
+        df = _labels(["img0004.png"], ["single"], ["snout", "paw"]).assign(x=96.0, y=54.0)
+        assert _export(proj, Path(d) / "a", df, "processed") == (b"PROC", [96.0, 54.0])
+        image, (x, y) = _export(proj, Path(d) / "b", df, "original")
+        assert image == b"ORIG" and abs(x - 960.0) < 1e-6 and abs(y - 540.0) < 1e-6
+        assert _export(proj, Path(d) / "c", df, None) == (b"PROC", [96.0, 54.0])   # as stored
+
+
+def test_export_frames_trusts_the_record_not_the_current_pairing():
+    # labels ingested in ORIGINAL space, the processed video registered afterwards:
+    # the record says original, so "processed" scales them down instead of assuming
+    # they already are -- and the stored-space default stays on the original frames.
+    with tempfile.TemporaryDirectory() as d:
+        proj = _paired_project(Path(d), space="original")
+        assert proj.label_frames_kind("v1") == "original"
+        df = _labels(["img0004.png"], ["single"], ["snout", "paw"]).assign(x=960.0, y=540.0)
+        image, (x, y) = _export(proj, Path(d) / "a", df, "processed")
+        assert image == b"PROC" and abs(x - 96.0) < 1e-6 and abs(y - 54.0) < 1e-6
+        assert _export(proj, Path(d) / "b", df, None) == (b"ORIG", [960.0, 540.0])
+
+
+def test_labels_without_a_record_fall_back_to_the_pairing():
+    with tempfile.TemporaryDirectory() as d:
+        proj = _paired_project(Path(d), space=None)
+        rec = proj.labels_record("v1")
+        assert rec.space == "processed" and abs(rec.scale_x - 0.1) < 1e-9
+        fx, fy = proj.labels_scale_to("v1", "original")
+        assert abs(fx - 10.0) < 1e-9 and abs(fy - 10.0) < 1e-9
+
+
+def test_check_frames_names_every_video_that_cannot_be_used():
+    with tempfile.TemporaryDirectory() as d:
+        proj = ws.Project.create(Path(d) / "ws", task="reach", bodyparts=["snout", "paw"])
+        for vid in ("a", "b"):
+            _register_dims(proj, vid, "original", 1920, 1080)
+        proj.check_frames(["a", "b"], "original")
+        proj.check_frames(["a", "b"], None)
+        try:
+            proj.check_frames(["a", "b"], "processed")
+        except ValueError as err:
+            msg = str(err)
+            assert "2 video(s)" in msg and "a: no processed" in msg and "b: no processed" in msg
+            assert "--frames original" in msg
+        else:
+            raise AssertionError("expected ValueError")
+        try:
+            proj.labels_scale_to("a", "thumbnails")
+        except ValueError as err:
+            assert "frames must be one of" in str(err)
+        else:
+            raise AssertionError("expected ValueError")
 
 
 # --------------------------------------------------------- native driver (lazy)

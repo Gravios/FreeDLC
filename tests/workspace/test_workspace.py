@@ -83,6 +83,7 @@ def test_layout_paths():
     assert lay.frames_dir("v1", "processed") == Path("/proj/sources/annotations/v1/frames/processed")
     assert lay.staging_dataset_dir("v1") == Path("/proj/.annotate/v1/labeled-data/v1")
     assert lay.staging_config("v1") == Path("/proj/.annotate/v1/config.yaml")
+    assert lay.labels_toml("v1") == Path("/proj/sources/annotations/v1/labels.toml")
     assert lay.model_toml("m1") == Path("/proj/models/m1/model.toml")
     assert lay.run_toml("analyze", "r1") == Path("/proj/runs/analyze/r1/run.toml")
     try:

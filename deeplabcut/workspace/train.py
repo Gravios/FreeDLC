@@ -46,6 +46,9 @@ class TrainConfig:
     detector_epochs: int = 0
     detector_batch_size: int = 8
     seed: int | None = None
+    #: frame set to train on: "processed" (the resolution inference runs at) or
+    #: "original"; ``None`` uses, per video, whichever its labels are stored in
+    frames: str | None = "processed"
     extra: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -88,6 +91,7 @@ def train_model(project, config: TrainConfig, backend: TrainBackend, *,
         train_dir,
         model_id=model_id,
         train_run_id=run.run_id,
+        frames=config.frames,
     )
     run.finish(outputs=[f"models/{model_id}"])
     return bundle

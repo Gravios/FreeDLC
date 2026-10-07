@@ -104,6 +104,7 @@ class ModelBundle:
         metrics: dict | None = None,
         legacy: dict | None = None,
         skeleton: list[list[str]] | None = None,
+        frames: str | None = None,
         link: str = "copy",
         exist_ok: bool = False,
     ) -> ModelBundle:
@@ -146,6 +147,7 @@ class ModelBundle:
             metrics=dict(metrics or {}),
             legacy=dict(legacy or {}),
             skeleton=[list(e) for e in (skeleton or [])],
+            frames=frames,
         )
         write_manifest(dest / "model.toml", card.to_dict())
         return cls(dest, card)
@@ -166,6 +168,7 @@ class ModelBundle:
         metrics: dict | None = None,
         legacy: dict | None = None,
         skeleton: list[list[str]] | None = None,
+        frames: str | None = None,
         snapshots: str = "all",
         link: str = "copy",
         exist_ok: bool = False,
@@ -206,6 +209,7 @@ class ModelBundle:
             metrics=metrics,
             legacy=legacy,
             skeleton=skeleton,
+            frames=frames,
             link=link,
             exist_ok=exist_ok,
         )

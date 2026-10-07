@@ -21,7 +21,7 @@ from typing import Any
 from .manifest import update_manifest
 from .metrics import pose_error
 
-__all__ = ["read_labels", "infer_on_frames", "evaluate_model"]
+__all__ = ["read_labels", "scale_labels", "infer_on_frames", "evaluate_model"]
 
 
 def read_labels(project, video_id: str):
@@ -29,6 +29,17 @@ def read_labels(project, video_id: str):
     import pandas as pd
 
     return pd.read_parquet(project.layout.labels_parquet(video_id))
+
+
+def scale_labels(df, scale: tuple[float, float]):
+    """Return ``df`` with ``x``/``y`` multiplied by ``scale`` (``df`` itself for identity)."""
+    scale_x, scale_y = scale
+    if (scale_x, scale_y) == (1.0, 1.0):
+        return df
+    df = df.copy()
+    df["x"] = df["x"] * scale_x
+    df["y"] = df["y"] * scale_y
+    return df
 
 
 def infer_on_frames(bundle, frames_dir, images, *, device: str | None = None, batch_size: int = 1):
@@ -78,27 +89,40 @@ def evaluate_model(
     pcutoff: float | None = 0.6,
     pck_threshold: float | None = None,
     write: bool = True,
+    frames: str | None = None,
 ) -> dict[str, Any]:
     """Evaluate ``bundle`` on a project's annotated videos and return metrics.
 
+    ``frames`` is the frame set to score on (``"original"`` | ``"processed"``). It
+    defaults to the one the model was trained on, as recorded on its card, and for
+    a model with no record to the set each video's labels are stored in. The
+    ground truth is converted into that pixel space, so errors are in its pixels.
+
     Records the metrics on the run's ``run.toml`` and (when ``write``) on the
     model card's ``model.toml``.
+
+    Raises:
+        ValueError: if a video's labels cannot be put on ``frames``.
     """
     import pandas as pd
 
+    frames = frames or getattr(bundle.card, "frames", None)
     labels_provider = labels_provider or read_labels
     if predictions_provider is None:
         def predictions_provider(project, video_id, ground_truth):
             images = list(dict.fromkeys(ground_truth["image"].tolist()))
-            return infer_on_frames(bundle, project.label_frames_dir(video_id), images)
+            kind = frames or project.label_frames_kind(video_id)
+            return infer_on_frames(bundle, project.layout.frames_dir(video_id, kind), images)
 
     videos = list(videos) if videos is not None else project.annotated_videos()
-    run = project.new_run("evaluate", model_id=bundle.card.model_id, inputs=videos)
+    project.check_frames(videos, frames)
+    run = project.new_run("evaluate", model_id=bundle.card.model_id, inputs=videos,
+                          params={"frames": frames} if frames else None)
     run.start()
     try:
         pred_frames, gt_frames = [], []
         for video_id in videos:
-            gt = labels_provider(project, video_id)
+            gt = scale_labels(labels_provider(project, video_id), project.labels_scale_to(video_id, frames))
             pred = predictions_provider(project, video_id, gt)
             gt_frames.append(gt)
             pred_frames.append(pred)

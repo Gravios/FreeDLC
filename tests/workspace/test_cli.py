@@ -381,6 +381,21 @@ def test_export_check_dispatch(monkeypatch):
 
 
 # --------------------------------------------------------------- add-video
+def test_train_refuses_a_frame_set_the_labels_cannot_reach():
+    """`--frames processed` is the default; without a processed video it says so, opens no run."""
+    with tempfile.TemporaryDirectory() as d:
+        proj = ws.Project.create(Path(d) / "ws", task="reach", bodyparts=["snout", "paw"])
+        proj.add_video(_make_videos(Path(d) / "raw", ["clip.mp4"])[0], link="reference")
+        (proj.layout.annotation_dir("clip")).mkdir(parents=True)
+        proj.layout.labels_parquet("clip").write_bytes(b"")     # marks the video as annotated
+        code, out = _run(["train", str(Path(d) / "ws"), "--epochs", "1"])
+        assert code == 2
+        assert "clip: no processed video is registered" in out and "--frames original" in out
+        assert proj.runs("train") == []
+        assert cli.build_parser().parse_args(["train", "x"]).frames == "processed"
+        assert cli.build_parser().parse_args(["evaluate", "x", "m"]).frames is None
+
+
 def _make_videos(root: Path, names) -> list[Path]:
     root.mkdir(parents=True, exist_ok=True)
     paths = []

@@ -18,7 +18,7 @@ from pathlib import Path
 from . import ids
 from .layout import Layout
 from .manifest import read_manifest, write_manifest
-from .schema import ProjectConfig, RunManifest, VideoRecord, now_iso
+from .schema import LabelsRecord, ProjectConfig, RunManifest, VideoRecord, now_iso
 from .util import code_version, materialize, same_file, sha256_file
 
 __all__ = ["Project", "Run"]
@@ -220,20 +220,82 @@ class Project:
             return (1.0, 1.0)
         return (proc.width / orig.width, proc.height / orig.height)
 
+    def labels_record(self, video_id: str) -> LabelsRecord:
+        """The pixel space ``labels.parquet`` is in, and the scale that put it there.
+
+        Read from ``labels.toml``, written when annotations are ingested. Labels
+        ingested before that record existed have none; for those the space is
+        inferred the way ingest decided it -- processed whenever a processed
+        counterpart currently gives a non-identity scale, original otherwise.
+        """
+        path = self.layout.labels_toml(video_id)
+        if path.exists():
+            return LabelsRecord.from_dict(read_manifest(path))
+        scale_x, scale_y = self.annotation_scale(video_id)
+        space = "processed" if (scale_x, scale_y) != (1.0, 1.0) else "original"
+        return LabelsRecord(video_id=video_id, space=space, scale_x=scale_x, scale_y=scale_y)
+
     def label_frames_kind(self, video_id: str) -> str:
         """Which frame set is in the same pixel space as ``labels.parquet``.
 
-        ``annotate`` scales coordinates into the processed space whenever a
-        processed counterpart gives a non-identity scale, so those labels pair with
-        ``frames/processed/``, not the original frames they were drawn on; without
-        a scale they stay in original space. Everything that reads frames *by label*
-        (dataset export, image sizes, evaluation) must use this, not a fixed kind.
+        Everything that reads frames *by label* without asking for a particular
+        frame set (dataset export, image sizes, evaluation) must use this, not a
+        fixed kind. See :meth:`labels_record`.
         """
-        return "processed" if self.annotation_scale(video_id) != (1.0, 1.0) else "original"
+        return self.labels_record(video_id).space
 
     def label_frames_dir(self, video_id: str) -> Path:
         """The frames directory matching ``labels.parquet`` (see :meth:`label_frames_kind`)."""
         return self.layout.frames_dir(video_id, self.label_frames_kind(video_id))
+
+    def labels_scale_to(self, video_id: str, frames: str | None) -> tuple[float, float]:
+        """The ``(x, y)`` factors mapping stored label coordinates onto ``frames``.
+
+        ``frames`` is ``"original"``, ``"processed"``, or ``None`` for "whatever the
+        labels are stored in" (identity). The stored space comes from
+        :meth:`labels_record`; going to the other one multiplies or divides by the
+        original->processed scale.
+
+        Raises:
+            ValueError: on an unknown ``frames``, or when the other space cannot be
+                reached -- ``processed`` without a registered processed counterpart
+                of known dimensions, or ``original`` for processed-space labels
+                whose scale is unknown.
+        """
+        if frames is None:
+            return (1.0, 1.0)
+        if frames not in self.layout.VIDEO_KINDS:
+            raise ValueError(f"frames must be one of {self.layout.VIDEO_KINDS}, got {frames!r}")
+        record = self.labels_record(video_id)
+        if frames == record.space:
+            return (1.0, 1.0)
+        if frames == "processed":
+            if not self.has_video(video_id, "processed"):
+                raise ValueError(f"{video_id}: no processed video is registered")
+            orig, proc = self.video_record(video_id, "original"), self.video_record(video_id, "processed")
+            if not (orig.width and orig.height and proc.width and proc.height):
+                raise ValueError(f"{video_id}: original/processed video dimensions are unknown")
+            return (proc.width / orig.width, proc.height / orig.height)
+        if not (record.scale_x and record.scale_y):
+            raise ValueError(f"{video_id}: the scale its processed-space labels were written with is unknown")
+        return (1.0 / record.scale_x, 1.0 / record.scale_y)
+
+    def check_frames(self, video_ids: Iterable[str], frames: str | None) -> None:
+        """Raise one ``ValueError`` naming every video whose labels cannot be put on ``frames``."""
+        problems = []
+        for video_id in video_ids:
+            try:
+                self.labels_scale_to(video_id, frames)
+            except ValueError as err:
+                problems.append(str(err))
+        if problems:
+            other = "original" if frames == "processed" else "processed"
+            raise ValueError(
+                f"cannot use the {frames} frames for {len(problems)} video(s):\n  "
+                + "\n  ".join(problems)
+                + f"\nregister the missing counterpart (`dlc-ws add-video --kind processed --video-id <id>`) "
+                f"or choose `--frames {other}`"
+            )
 
     def annotated_videos(self) -> list[str]:
         """Video ids that have ingested annotations (``labels.parquet``), sorted."""

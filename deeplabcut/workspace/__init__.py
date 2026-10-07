@@ -60,6 +60,7 @@ from .project import Project, Run
 from .schema import (
     RUN_KINDS,
     SCHEMA_VERSION,
+    LabelsRecord,
     ModelCard,
     ProjectConfig,
     RunManifest,
@@ -79,6 +80,7 @@ __all__ = [
     "ModelBundle",
     "ProjectConfig",
     "VideoRecord",
+    "LabelsRecord",
     "ModelCard",
     "RunManifest",
     "SINGLE_INDIVIDUAL",

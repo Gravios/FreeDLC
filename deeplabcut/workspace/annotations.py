@@ -23,6 +23,8 @@ from pathlib import Path
 
 from . import ids
 from .apply import SINGLE_INDIVIDUAL
+from .manifest import write_manifest
+from .schema import LabelsRecord
 from .util import materialize
 
 __all__ = [
@@ -180,6 +182,10 @@ def ingest_video_annotations(
     trains on. It defaults to ``(1.0, 1.0)`` (identity), so callers that annotate and
     train in the same space are unaffected.
 
+    Alongside the labels a ``labels.toml`` records which space they are now in
+    (``processed`` when a non-identity ``scale`` was applied, else ``original``) and
+    the scale itself, so they can later be mapped onto either frame set.
+
     Returns ``(long_df, n_frames)``, the number of labeled frames present in the
     workspace afterwards.
     """
@@ -201,6 +207,9 @@ def ingest_video_annotations(
         copied = copy_frames(frames_dir, dest_dir, images, link=link)
     if write:
         write_labels_parquet(long, project.layout.labels_parquet(video_id))
+        space = "processed" if (scale_x, scale_y) != (1.0, 1.0) else "original"
+        record = LabelsRecord(video_id=video_id, space=space, scale_x=scale_x, scale_y=scale_y)
+        write_manifest(project.layout.labels_toml(video_id), record.to_dict())
     return long, copied
 
 

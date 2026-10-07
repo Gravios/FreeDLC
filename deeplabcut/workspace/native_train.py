@@ -26,20 +26,21 @@ __all__ = ["TRAIN_LOG", "train_in_workspace", "probe_image_dims"]
 TRAIN_LOG = "train.txt"
 
 
-def probe_image_dims(project, video_ids) -> dict[str, tuple[int, int]]:
+def probe_image_dims(project, video_ids, frames: str | None = None) -> dict[str, tuple[int, int]]:
     """Map ``"<video_id>/<frame>" -> (width, height)`` by reading frame headers (PIL).
 
-    Reads the frame set the labels are in (the one the dataset export stages), so
-    the sizes describe the images the trainer actually loads.
+    Reads the frame set the dataset export stages -- ``frames``, or per video the
+    one its labels are stored in when ``None`` -- so the sizes describe the images
+    the trainer actually loads.
     """
     from PIL import Image
 
     dims: dict[str, tuple[int, int]] = {}
     for vid in video_ids:
-        frames = project.label_frames_dir(vid)
-        if not frames.is_dir():
+        frames_dir = project.layout.frames_dir(vid, frames or project.label_frames_kind(vid))
+        if not frames_dir.is_dir():
             continue
-        for f in sorted(frames.iterdir()):
+        for f in sorted(frames_dir.iterdir()):
             if not f.is_file():
                 continue
             try:
@@ -53,7 +54,8 @@ def probe_image_dims(project, video_ids) -> dict[str, tuple[int, int]]:
 def train_in_workspace(project, run, config) -> Path:
     """Train a model natively; returns the ``train`` dir holding the snapshots.
 
-    Requires torch. Stages ``runs/train/<id>/dataset/`` (COCO json + linked
+    Requires torch. Trains on the frame set ``config.frames`` names, with the labels
+    converted into its pixel space. Stages ``runs/train/<id>/dataset/`` (COCO json + linked
     frames), writes the pose config and snapshots into ``runs/train/<id>/train/``.
     Progress is logged to the console and to ``runs/train/<id>/train/train.txt``.
     """
@@ -73,7 +75,7 @@ def train_in_workspace(project, run, config) -> Path:
     export_coco_dataset(
         project, dataset_dir, video_ids=video_ids,
         train_fraction=config.train_fraction, seed=config.seed or 0,
-        image_dims=probe_image_dims(project, video_ids),
+        image_dims=probe_image_dims(project, video_ids, config.frames), frames=config.frames,
     )
 
     pose_config_path = train_dir / "pytorch_config.yaml"
