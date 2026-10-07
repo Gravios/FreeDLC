@@ -20,7 +20,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-__all__ = ["train_in_workspace", "probe_image_dims"]
+__all__ = ["TRAIN_LOG", "train_in_workspace", "probe_image_dims"]
+
+#: Training log written into a run's ``train/`` directory (DeepLabCut's own name for it).
+TRAIN_LOG = "train.txt"
 
 
 def probe_image_dims(project, video_ids) -> dict[str, tuple[int, int]]:
@@ -52,10 +55,12 @@ def train_in_workspace(project, run, config) -> Path:
 
     Requires torch. Stages ``runs/train/<id>/dataset/`` (COCO json + linked
     frames), writes the pose config and snapshots into ``runs/train/<id>/train/``.
+    Progress is logged to the console and to ``runs/train/<id>/train/train.txt``.
     """
     from deeplabcut.pose_estimation_pytorch.apis import training as dlc_training
     from deeplabcut.pose_estimation_pytorch.config.make_pose_config import make_pytorch_pose_config
     from deeplabcut.pose_estimation_pytorch.data import COCOLoader
+    from deeplabcut.pose_estimation_pytorch.runners.logger import destroy_file_logging, setup_file_logging
     from deeplabcut.pose_estimation_pytorch.task import Task
 
     from .coco_export import TEST_JSON, TRAIN_JSON, export_coco_dataset, workspace_to_dlc_project_dict
@@ -93,18 +98,26 @@ def train_in_workspace(project, run, config) -> Path:
         loader.model_cfg.detector.train_settings.batch_size = config.detector_batch_size
         loader.model_cfg.detector.train_settings.epochs = config.detector_epochs
 
-    pose_task = Task(loader.model_cfg.get("method", "bu"))
-    if pose_task == Task.TOP_DOWN and loader.model_cfg["detector"]["train_settings"]["epochs"] > 0:
-        detector_run_config = loader.model_cfg["detector"]
-        detector_run_config["device"] = loader.model_cfg.get("device")
-        dlc_training.train(
-            loader=loader, run_config=detector_run_config, task=Task.DETECT, device=config.device,
-        )
+    # DeepLabCut reports training progress (per-epoch losses, evaluation metrics)
+    # through the root logger and leaves it to the entry point to attach handlers --
+    # train_network() does it for the legacy layout. Do the same here, or the run is
+    # silent: progress goes to the console and to train/train.txt, as in DeepLabCut.
+    setup_file_logging(train_dir / TRAIN_LOG)
+    try:
+        pose_task = Task(loader.model_cfg.get("method", "bu"))
+        if pose_task == Task.TOP_DOWN and loader.model_cfg["detector"]["train_settings"]["epochs"] > 0:
+            detector_run_config = loader.model_cfg["detector"]
+            detector_run_config["device"] = loader.model_cfg.get("device")
+            dlc_training.train(
+                loader=loader, run_config=detector_run_config, task=Task.DETECT, device=config.device,
+            )
 
-    if loader.model_cfg["train_settings"]["epochs"] > 0:
-        dlc_training.train(
-            loader=loader, run_config=loader.model_cfg, task=pose_task,
-            device=config.device, logger_config=loader.model_cfg.get("logger"),
-        )
+        if loader.model_cfg["train_settings"]["epochs"] > 0:
+            dlc_training.train(
+                loader=loader, run_config=loader.model_cfg, task=pose_task,
+                device=config.device, logger_config=loader.model_cfg.get("logger"),
+            )
+    finally:
+        destroy_file_logging()
 
     return train_dir
