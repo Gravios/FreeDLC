@@ -109,6 +109,41 @@ def test_apply_to_videos_builds_runner_once(monkeypatch):
             assert (od / "pose.parquet").exists() and (od / "run.toml").exists()
 
 
+def test_apply_file_report_names_the_files_involved(monkeypatch):
+    """`dlc-ws apply --verbose`: the model files used, each video (and what a link
+    resolves to), and every file written -- and nothing at all without the flag."""
+    import contextlib
+    import io
+
+    from deeplabcut.workspace import cli
+
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        bundle = _bundle(d)
+        _patch_inference(monkeypatch)
+        real = d / "raw" / "session.mp4"
+        real.parent.mkdir()
+        real.write_bytes(b"v")
+        link = d / "clip1.mp4"
+        link.symlink_to(real)
+
+        def run(verbose):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), cli._file_report(verbose):
+                ws.apply_to_videos(bundle, [link], d / "out")
+            return buf.getvalue()
+
+        assert run(False) == ""
+        out = run(True)
+        for needed in (
+            str(bundle.path), str(bundle.pose_config_path), str(bundle.snapshot_path()),
+            f"{link} -> {real.resolve()}",
+            str(d / "out" / "clip1" / "pose.parquet"), str(d / "out" / "clip1" / "run.toml"),
+        ):
+            assert needed in out, f"{needed!r} missing from:\n{out}"
+        assert run(False) == ""                                  # the flag does not stick
+
+
 def test_apply_to_videos_on_error_skip(monkeypatch):
     with tempfile.TemporaryDirectory() as d:
         d = Path(d)

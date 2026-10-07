@@ -294,6 +294,16 @@ def test_label_dispatch_reads_sidecar(monkeypatch):
         assert seen["out"] == "clip.fdlc.mp4"
         assert seen["bodyparts"] == ["snout", "tail"]        # from the .fdlc.toml sidecar
         assert seen["skeleton"] == [["snout", "tail"]]
+        assert str(d / "clip.fdlc.parquet") not in out       # quiet by default
+
+        code, out = _run(["label", str(v), "--verbose"])     # ...and names every file when asked
+        assert code == 0
+        for needed in (str(v), str(d / "clip.fdlc.parquet"), str(d / "clip.fdlc.toml"), str(d / "clip.fdlc.mp4")):
+            assert needed in out, f"{needed!r} missing from:\n{out}"
+        parser = cli.build_parser()
+        assert parser.parse_args(["train", "x", "-v"]).verbose
+        assert parser.parse_args(["apply", "--model", "m", "x", "-v"]).verbose
+        assert not parser.parse_args(["label", "x"]).verbose
 
 
 def test_label_missing_parquet():

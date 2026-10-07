@@ -27,7 +27,7 @@ from typing import Any
 from . import ids
 from .manifest import write_manifest
 from .schema import SCHEMA_VERSION, RunManifest, now_iso
-from .util import code_version
+from .util import code_version, files_log, shown
 
 log = logging.getLogger(__name__)
 
@@ -234,6 +234,17 @@ def collect_videos(paths: Sequence[str | Path], *, extensions=VIDEO_EXTENSIONS) 
     return unique
 
 
+def _report_bundle(bundle, snapshot: str, detector_snapshot: str) -> None:
+    """Tell the file report which model files a run is about to use."""
+    files_log.info("model bundle %s", shown(bundle.path))
+    files_log.info("  config    %s", shown(bundle.pose_config_path))
+    files_log.info("  snapshot  %s", shown(bundle.snapshot_path(snapshot)))
+    if bundle.card.top_down:
+        files_log.info("  detector  %s", shown(bundle.detector_snapshot_path(detector_snapshot)))
+    if getattr(bundle.card, "frames", None):
+        files_log.info("  trained on %s frames -- apply it to video of that resolution", bundle.card.frames)
+
+
 def _build_runners(bundle, *, snapshot, detector_snapshot, device, batch_size, max_individuals):
     """Build the pose runner (and detector runner for top-down models) once."""
     pose_runner = bundle.build_pose_runner(
@@ -314,30 +325,38 @@ def apply_to_video(
     """
     started = now_iso()
     if runners is None:
+        _report_bundle(bundle, snapshot, detector_snapshot)
         runners = _build_runners(
             bundle, snapshot=snapshot, detector_snapshot=detector_snapshot,
             device=device, batch_size=batch_size, max_individuals=max_individuals,
         )
     pose_runner, detector_runner = runners
+    files_log.info("video %s", shown(video))
     df = _infer_to_df(bundle, video, pose_runner, detector_runner, cropping=cropping)
     if not write:
         return df
     if beside_video:
         pose_path = write_pose_parquet(df, beside_video_path(video))
-        _write_fdlc_sidecar(
+        sidecar = _write_fdlc_sidecar(
             video, pose_path, bundle, skeleton=skeleton,
             params={"batch_size": batch_size, "device": device, "cropping": cropping},
             snapshot=snapshot, started=started,
         )
+        files_log.info("  pose     %s (%d frame(s))", shown(pose_path), df["frame"].nunique() if len(df) else 0)
+        files_log.info("  sidecar  %s", shown(sidecar))
         if labeled_video:
             _render_labeled(video, df, labeled_video_path(video), bundle, skeleton, pcutoff)
+            files_log.info("  labeled  %s", shown(labeled_video_path(video)))
         return pose_path
     pose_path = _write_video_outputs(
         df, video, out_dir, bundle,
         snapshot=snapshot, batch_size=batch_size, device=device, cropping=cropping, started=started,
     )
+    files_log.info("  pose     %s (%d frame(s))", shown(pose_path), df["frame"].nunique() if len(df) else 0)
+    files_log.info("  record   %s", shown(Path(out_dir) / "run.toml"))
     if labeled_video:
         _render_labeled(video, df, Path(out_dir) / "labeled.mp4", bundle, skeleton, pcutoff)
+        files_log.info("  labeled  %s", shown(Path(out_dir) / "labeled.mp4"))
     return pose_path
 
 
@@ -368,6 +387,7 @@ def apply_to_videos(
     (default) re-raises.
     """
     out_root = Path(out_root)
+    _report_bundle(bundle, snapshot, detector_snapshot)
     runners = _build_runners(
         bundle, snapshot=snapshot, detector_snapshot=detector_snapshot,
         device=device, batch_size=batch_size, max_individuals=max_individuals,

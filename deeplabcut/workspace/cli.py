@@ -18,7 +18,9 @@ one from scratch, the latter converts a legacy DeepLabCut tree.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -37,6 +39,7 @@ from .migrate import migrate_project
 from .model_bundle import ModelBundle
 from .project import Project
 from .train import TrainConfig, WorkspaceTrainBackend, train_model
+from .util import files_log, shown
 
 __all__ = ["main", "build_parser"]
 
@@ -452,24 +455,34 @@ def cmd_label(args) -> int:
     # else derive bodyparts from the parquet (skeleton absent).
     bodyparts: list[str] | None = None
     skeleton: list[list[str]] = []
+    source = f"bodypart names read from {parquet} (no skeleton)"   # where they came from, for --verbose
     if args.model:
-        card = ModelBundle.open(args.model).card
-        bodyparts, skeleton = list(card.bodyparts), list(card.skeleton)
+        bundle = ModelBundle.open(args.model)
+        bodyparts, skeleton = list(bundle.card.bodyparts), list(bundle.card.skeleton)
+        source = shown(bundle.path / "model.toml")
     elif args.project:
         if not args.model_id:
             print("--model-id is required with --project")
             return 2
         project = Project.open(args.project)
-        card = ModelBundle.from_project(project, args.model_id).card
-        bodyparts = list(card.bodyparts)
-        skeleton = list(card.skeleton) or list(project.config.skeleton)
+        bundle = ModelBundle.from_project(project, args.model_id)
+        bodyparts = list(bundle.card.bodyparts)
+        skeleton = list(bundle.card.skeleton) or list(project.config.skeleton)
+        source = shown(bundle.path / "model.toml")
+        if not bundle.card.skeleton and skeleton:
+            source += f" (skeleton from {shown(project.layout.project_toml)})"
     else:
         for sc in (sidecar_for_parquet(parquet), sidecar_for_parquet(beside_video_path(video))):
             if sc.is_file():
                 bodyparts, skeleton = read_fdlc_sidecar(sc)
+                source = shown(sc)
                 break
 
     out = Path(args.out) if args.out else labeled_video_path(video)
+    files_log.info("video    %s", shown(video))
+    files_log.info("pose     %s", shown(parquet))
+    files_log.info("markers  %s", source)
+    files_log.info("output   %s", shown(out))
     result = render_labeled_from_parquet(
         video, parquet, out, bodyparts=bodyparts, skeleton=skeleton,
         pcutoff=args.pcutoff, dotsize=args.dotsize,
@@ -652,6 +665,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="likelihood threshold for drawing keypoints in the labeled video")
     p.add_argument("--device")
     p.add_argument("--batch-size", type=int, default=1, dest="batch_size")
+    p.add_argument("-v", "--verbose", action="store_true",
+                   help="list the files read and written (labels, frames, dataset, config, snapshots, outputs)")
     p.set_defaults(func=cmd_apply)
 
     p = sub.add_parser("label", help="render an annotated video from an existing .fdlc.parquet")
@@ -663,6 +678,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--model-id", dest="model_id", help="model id inside --project")
     p.add_argument("--pcutoff", type=float, default=0.6)
     p.add_argument("--dotsize", type=int, default=5)
+    p.add_argument("-v", "--verbose", action="store_true",
+                   help="list the files read and written (labels, frames, dataset, config, snapshots, outputs)")
     p.set_defaults(func=cmd_label)
 
     p = sub.add_parser("track", help="assign cross-frame identities to a pose parquet")
@@ -697,6 +714,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--frames", choices=Layout.VIDEO_KINDS[::-1], default="processed",
                    help="frame set to train on; labels are converted into its pixel space "
                         "(default: processed, the resolution inference runs at)")
+    p.add_argument("-v", "--verbose", action="store_true",
+                   help="list the files read and written (labels, frames, dataset, config, snapshots, outputs)")
     p.set_defaults(func=cmd_train)
 
     p = sub.add_parser("evaluate", help="evaluate a model against annotations")
@@ -718,7 +737,34 @@ def main(argv: list[str] | None = None) -> int:
     if not getattr(args, "func", None):
         parser.print_help()
         return 2
-    return args.func(args)
+    with _file_report(getattr(args, "verbose", False)):
+        return args.func(args)
+
+
+@contextlib.contextmanager
+def _file_report(enabled: bool):
+    """For ``--verbose``: print the workspace's file report to stdout for one command.
+
+    The report is a logger (see :data:`~.util.files_log`) so the code that knows
+    which files are involved can say so where it uses them. It is given its own
+    handler and kept from propagating, so the lines appear once, in the same form
+    whether or not training has installed its own handlers on the root logger.
+    """
+    if not enabled:
+        yield
+        return
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    level, propagate = files_log.level, files_log.propagate
+    files_log.addHandler(handler)
+    files_log.setLevel(logging.INFO)
+    files_log.propagate = False
+    try:
+        yield
+    finally:
+        files_log.removeHandler(handler)
+        files_log.setLevel(level)
+        files_log.propagate = propagate
 
 
 if __name__ == "__main__":

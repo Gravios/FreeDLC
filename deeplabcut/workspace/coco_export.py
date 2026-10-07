@@ -205,7 +205,7 @@ def export_coco_dataset(
             :meth:`Project.check_frames`), or no labeled frame has a readable image.
     """
     from .evaluate import read_labels, scale_labels
-    from .util import materialize
+    from .util import files_log, materialize, shown
 
     dest = Path(dest)
     images_root = dest / IMAGES_DIRNAME
@@ -243,6 +243,12 @@ def export_coco_dataset(
             )
             df = df[df["image"].isin(present)]
         labels_by_video[vid] = df
+        record, (scale_x, scale_y) = project.labels_record(vid), project.labels_scale_to(vid, frames)
+        converted = "" if (scale_x, scale_y) == (1.0, 1.0) else f", coordinates x{scale_x:g} y{scale_y:g}"
+        files_log.info("video %s: %d labeled frame(s)", vid, len(present))
+        files_log.info("  labels  %s (stored in %s pixels%s)",
+                       shown(project.layout.labels_parquet(vid)), record.space, converted)
+        files_log.info("  frames  %s", shown(src_dir))
 
     coco = labels_to_coco(labels_by_video, project.config.bodyparts, image_dims=image_dims)
     if not coco["images"]:
@@ -250,4 +256,9 @@ def export_coco_dataset(
     train, test = split_coco(coco, train_fraction=train_fraction, seed=seed)
     train_path = write_coco_json(train, dest / ANNOTATIONS_DIRNAME / TRAIN_JSON)
     test_path = write_coco_json(test, dest / ANNOTATIONS_DIRNAME / TEST_JSON)
+    files_log.info("dataset %s", shown(dest))
+    files_log.info("  train   %s (%d image(s))", shown(train_path), len(train["images"]))
+    files_log.info("  test    %s (%d image(s))", shown(test_path), len(test["images"]))
+    files_log.info("  images  %s (%s to the frames above)",
+                   shown(images_root), "symlinks" if link == "symlink" else "copies")
     return train_path, test_path

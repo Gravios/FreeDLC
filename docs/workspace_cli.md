@@ -196,12 +196,52 @@ models/<model_id>/             the resulting bundle
 
 `models/<model_id>/model.toml` records `frames = "processed"` or `"original"`.
 
-Only labeled frames whose image is a readable file are trained on. If some are
+Only frames with at least one labeled keypoint are trained on; frames that were
+extracted but never labeled are skipped. Of those, only frames whose image is a
+readable file are used. If some are
 not, they are left out and the run says so, per video, with the fix:
 
 ```text
 session1: 3 of 20 labeled frame(s) have no readable image in sources/annotations/session1/frames/original and are left out of training; run `dlc-ws extract-frames session1` to restore them
 ```
+
+### Seeing which files are used: `--verbose`
+
+`train`, `apply` and `label` take `-v` / `--verbose`, which lists every file the
+command reads and writes, as it gets to them:
+
+```text
+$ dlc-ws train ws --verbose
+project /data/ws
+frame set: processed
+video session1: 20 labeled frame(s)
+  labels  /data/ws/sources/annotations/session1/labels.parquet (stored in processed pixels)
+  frames  /data/ws/sources/annotations/session1/frames/processed
+dataset /data/ws/runs/train/<run_id>/dataset
+  train   /data/ws/runs/train/<run_id>/dataset/annotations/train.json (19 image(s))
+  test    /data/ws/runs/train/<run_id>/dataset/annotations/test.json (1 image(s))
+  images  /data/ws/runs/train/<run_id>/dataset/images (symlinks to the frames above)
+training in /data/ws/runs/train/<run_id>/train
+  config     /data/ws/runs/train/<run_id>/train/pytorch_config.yaml
+  log        /data/ws/runs/train/<run_id>/train/train.txt
+  stats      /data/ws/runs/train/<run_id>/train/learning_stats.csv
+  snapshots  /data/ws/runs/train/<run_id>/train/snapshot-*.pt
+Using 19 images and 1 for testing
+...
+model bundle /data/ws/models/<model_id>
+  card      /data/ws/models/<model_id>/model.toml
+  config    /data/ws/models/<model_id>/pose.yaml
+  snapshot  /data/ws/models/<model_id>/snapshots/pose-snapshot-best-190.pt  (default)
+  from run  /data/ws/runs/train/<run_id>/run.toml
+trained -> models/<model_id> (processed frames)
+```
+
+Paths are absolute. When the labels are converted for the chosen frame set, the
+`labels` line says so (`stored in processed pixels, coordinates x2 y2`). For `apply` the report
+names the bundle's config and the snapshot used, each input video (with the file
+a symlink resolves to), and the pose file, record and labeled video written for
+it. For `label` it names the video, the pose file, where the marker names and
+skeleton came from, and the output.
 
 ### Augmentation
 
@@ -314,6 +354,18 @@ scale_y = 0.5
 ```
 
 ## Troubleshooting
+
+### The model predicts nothing: likelihoods near 0, points on a regular grid
+
+Look at `runs/train/<run_id>/train/learning_stats.csv`. If
+`losses/train.bodypart_locref` is exactly `0.0` and the heatmap loss falls to
+around `1e-9` within a few epochs, the model was trained without labels: every
+target was blank, and it learned to output zeros. Versions before the fix wrote
+an empty bounding box for each annotation, which DeepLabCut's loader discards
+without a message. Models from those versions are unusable; update and retrain.
+A healthy run shows a non-zero locref loss and a heatmap loss that decreases
+gradually. Training now refuses to start if the loader keeps fewer labeled
+images than the dataset holds.
 
 ### `cannot use the processed frames for N video(s)`
 

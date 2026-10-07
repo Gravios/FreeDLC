@@ -25,6 +25,7 @@ from typing import Any, Protocol
 
 from . import ids
 from .model_bundle import ModelBundle
+from .util import files_log, shown
 
 __all__ = ["TrainConfig", "TrainBackend", "train_model", "WorkspaceTrainBackend"]
 
@@ -94,6 +95,13 @@ def train_model(project, config: TrainConfig, backend: TrainBackend, *,
         frames=config.frames,
     )
     run.finish(outputs=[f"models/{model_id}"])
+    files_log.info("model bundle %s", shown(bundle.path))
+    files_log.info("  card      %s", shown(bundle.path / "model.toml"))
+    files_log.info("  config    %s", shown(bundle.pose_config_path))
+    for snapshot in sorted(bundle.snapshots_dir.iterdir()):
+        default = "  (default)" if snapshot.name == bundle.card.default_snapshot else ""
+        files_log.info("  snapshot  %s%s", shown(snapshot), default)
+    files_log.info("  from run  %s", shown(run.manifest_path))
     return bundle
 
 

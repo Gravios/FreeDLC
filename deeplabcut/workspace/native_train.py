@@ -66,6 +66,7 @@ def train_in_workspace(project, run, config) -> Path:
     from deeplabcut.pose_estimation_pytorch.task import Task
 
     from .coco_export import TEST_JSON, TRAIN_JSON, export_coco_dataset, workspace_to_dlc_project_dict
+    from .util import files_log, shown
 
     # Absolute: the loader rewrites each image's file_name to <dataset>/images/<name>
     # every time it loads the data, and only leaves absolute paths alone. With a
@@ -76,6 +77,8 @@ def train_in_workspace(project, run, config) -> Path:
     train_dir.mkdir(parents=True, exist_ok=True)
 
     video_ids = project.annotated_videos()
+    files_log.info("project %s", shown(project.layout.root))
+    files_log.info("frame set: %s", config.frames or "as stored, per video")
     export_coco_dataset(
         project, dataset_dir, video_ids=video_ids,
         train_fraction=config.train_fraction, seed=config.seed or 0,
@@ -118,6 +121,11 @@ def train_in_workspace(project, run, config) -> Path:
     # through the root logger and leaves it to the entry point to attach handlers --
     # train_network() does it for the legacy layout. Do the same here, or the run is
     # silent: progress goes to the console and to train/train.txt, as in DeepLabCut.
+    files_log.info("training in %s", train_dir)
+    files_log.info("  config     %s", pose_config_path)
+    files_log.info("  log        %s", train_dir / TRAIN_LOG)
+    files_log.info("  stats      %s", train_dir / "learning_stats.csv")
+    files_log.info("  snapshots  %s", train_dir / "snapshot-*.pt")
     setup_file_logging(train_dir / TRAIN_LOG)
     try:
         pose_task = Task(loader.model_cfg.get("method", "bu"))

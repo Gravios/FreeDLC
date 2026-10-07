@@ -332,6 +332,30 @@ def test_export_frames_trusts_the_record_not_the_current_pairing():
         assert _export(proj, Path(d) / "b", df, None) == (b"ORIG", [960.0, 540.0])
 
 
+def test_export_file_report_names_labels_frames_and_dataset():
+    import contextlib
+    import io
+
+    from deeplabcut.workspace import cli
+
+    with tempfile.TemporaryDirectory() as d:
+        proj = _paired_project(Path(d), space="processed")
+        df = _labels(["img0004.png"], ["single"], ["snout", "paw"]).assign(x=96.0, y=54.0)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), cli._file_report(True):
+            _export(proj, Path(d) / "ds", df, "original")
+        out = buf.getvalue()
+        lay = proj.layout
+        for needed in (
+            "video v1: 1 labeled frame(s)",
+            f"{lay.labels_parquet('v1')} (stored in processed pixels, coordinates x10 y10)",
+            str(lay.frames_dir("v1", "original")),
+            f"{Path(d) / 'ds' / 'annotations' / 'train.json'} (1 image(s))",
+            str(Path(d) / "ds" / "images"),
+        ):
+            assert needed in out, f"{needed!r} missing from:\n{out}"
+
+
 def test_labels_without_a_record_fall_back_to_the_pairing():
     with tempfile.TemporaryDirectory() as d:
         proj = _paired_project(Path(d), space=None)

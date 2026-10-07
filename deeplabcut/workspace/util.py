@@ -5,11 +5,29 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import shutil
 from pathlib import Path
 
-__all__ = ["code_version", "sha256_file", "same_file", "materialize"]
+__all__ = ["FILES_LOGGER", "files_log", "shown", "code_version", "sha256_file", "same_file", "materialize"]
+
+#: Name of the logger that reports which files an operation reads and writes.
+FILES_LOGGER = "deeplabcut.workspace.files"
+
+#: Silent unless asked for: ``dlc-ws <command> --verbose`` raises it to INFO and gives
+#: it a console handler. It stays at WARNING otherwise so the lines do not ride along
+#: whenever something else (training) installs a root handler at INFO.
+files_log = logging.getLogger(FILES_LOGGER)
+files_log.setLevel(logging.WARNING)
+
+
+def shown(path: str | Path) -> str:
+    """``path`` as the file report prints it: absolute, and for a symlink with the
+    file it resolves to (``link -> target``), so a line always names a real location."""
+    path = Path(path)
+    absolute = os.path.abspath(path)
+    return f"{absolute} -> {path.resolve()}" if path.is_symlink() else absolute
 
 
 def code_version() -> str | None:
