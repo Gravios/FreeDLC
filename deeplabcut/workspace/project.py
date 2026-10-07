@@ -180,6 +180,38 @@ class Project:
         write_manifest(self.layout.video_toml(vid, kind), record.to_dict())
         return vid
 
+    def match_originals(self, files: Iterable[str | Path]) -> tuple[dict[str, Path], list[str]]:
+        """Pair video ``files`` with the registered originals they were made from.
+
+        A file belongs to an original when its slugified name is that original's id,
+        or the id followed by a suffix: ``Session1_640x360.mp4`` and
+        ``Session1-triplet.mp4`` both belong to ``session1``. Where several ids fit,
+        the longest wins, so ``session1-b_640x360.mp4`` goes to ``session1-b``.
+
+        Returns:
+            ``(pairs, problems)``: the file for each matched video id, and one message
+            per file that fits no original or shares its original with another file.
+            The pairing is only safe to act on when ``problems`` is empty.
+        """
+        originals = self.videos("original")
+        pairs: dict[str, Path] = {}
+        problems: list[str] = []
+        for file in sorted(Path(f) for f in files):
+            try:
+                slug = ids.slugify(file.stem)
+            except ValueError:
+                slug = ""
+            fits = [vid for vid in originals if slug == vid or slug.startswith(vid + "-")]
+            if not fits:
+                problems.append(f"{file.name}: no original video matches this name")
+                continue
+            vid = max(fits, key=len)
+            if vid in pairs:
+                problems.append(f"{file.name}: {vid!r} is already matched by {pairs[vid].name}")
+            else:
+                pairs[vid] = file
+        return pairs, problems
+
     def video_media_files(self, video_id: str, kind: str = "original") -> list[Path]:
         """Media materialized under a video's directory (``video.<ext>``), sorted.
 

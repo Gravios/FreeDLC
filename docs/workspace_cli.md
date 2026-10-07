@@ -11,12 +11,12 @@ on, what to do when a video has no downscaled counterpart, and how to recover
 from broken frame links.
 
 ```text
-create -> add-video -> extract-frames -> annotate -> train -> evaluate -> apply
+create -> add-video -> extract -> annotate -> train -> evaluate -> apply
 ```
 
 Every command has `--help`. Note that the project is given in two ways: most
 commands take it as the first positional argument (`dlc-ws train <project>`),
-while `extract-frames` and `annotate` take the *video* positionally and the
+while `extract` and `annotate` take the *video* positionally and the
 project as `--project` (default: the current directory).
 
 ## Layout
@@ -87,12 +87,49 @@ the stored media but never writes to the file a previous symlink pointed at.
 A processed video is optional. A project with only originals works; see
 "Projects without processed videos" under Use cases.
 
+### Registering a whole folder: `videos --register`
+
+Processed videos usually come as a folder made from the originals -- `reduced/`,
+`reduced-640x360/`, `triplet/`. `--register` pairs such a folder with the
+originals by name, so no `--video-id` is needed:
+
+```bash
+dlc-ws videos ws --register /data/video/reduced-640x360
+dlc-ws extract --all --project ws --match-original
+```
+
+A file belongs to an original when its name is the original's name, optionally
+followed by a suffix: `Session1_640x360.mp4` and `Session1-triplet.mp4` both
+belong to `session1`. The folder is taken as a whole. If any video in it matches
+no original, or two match the same one, the mismatches are listed and **nothing
+is changed**. Labeled `.fdlc.mp4` videos in the folder are ignored.
+
+Each matched original gets the file as its processed video, replacing the one it
+had; the previous file is not touched, only the link to it. Originals with no
+video in the folder keep what they had. Any number of folders can be kept side
+by side and switched between this way -- the project points at one at a time.
+
+The frames in `frames/processed/` were read from the previous videos, so run
+`extract --match-original` after switching (see "Extract frames"). `videos`
+points out frames whose size no longer fits:
+
+```text
+  ! session1: processed frames are 192x108 but the processed video is 640x360 (run `dlc-ws extract session1 --match-original`)
+```
+
+It also notes a processed video whose frame count differs from its original's.
+Frame N of one is then not necessarily frame N of the other, and labels would sit
+on the wrong moment; re-encode it without dropping or duplicating frames
+(`ffmpeg -fps_mode passthrough`).
+
 ## Extract frames
 
 ```bash
-dlc-ws extract-frames session1 --project ws -n 20
-dlc-ws extract-frames --all --project ws -n 20 --mode kmeans -j 4
+dlc-ws extract session1 --project ws -n 20
+dlc-ws extract --all --project ws -n 20 --mode kmeans -j 4
 ```
+
+(`extract-frames`, the command's earlier name, still works.)
 
 Frames are selected once, on the original video, and written to
 `frames/original/`. If a processed video is registered, the same frame indices
@@ -104,6 +141,12 @@ existing set and completes it:
 - a frame that has become a link to itself is re-read from the video;
 - processed frames missing for an original are filled in, which is what happens
   when the processed video was registered after extraction.
+
+`--match-original` reads the whole processed set again, from the processed video
+registered now, at the frames already extracted from the original. Use it after
+replacing the processed video. The selection, the original frames and the labels
+are untouched, so no annotation is lost. With `--all` it skips videos that have
+no processed video.
 
 `--overwrite` discards the set and selects again. Labels are keyed by frame file
 name, so after `--overwrite` existing labels may point at frames that no longer
@@ -223,7 +266,7 @@ readable file are used. If some are
 not, they are left out and the run says so, per video, with the fix:
 
 ```text
-session1: 3 of 20 labeled frame(s) have no readable image in sources/annotations/session1/frames/original and are left out of training; run `dlc-ws extract-frames session1` to restore them
+session1: 3 of 20 labeled frame(s) have no readable image in sources/annotations/session1/frames/original and are left out of training; run `dlc-ws extract session1` to restore them
 ```
 
 ### Seeing which files are used: `--verbose`
@@ -350,7 +393,7 @@ on", not "high resolution".
 
 ```bash
 dlc-ws add-video ws session1-320x240.mp4 --processed --video-id session1
-dlc-ws extract-frames session1 --project ws      # fills in frames/processed/
+dlc-ws extract session1 --project ws      # fills in frames/processed/
 dlc-ws train ws
 ```
 
@@ -372,18 +415,21 @@ dlc-ws annotate session1 --project ws    # save, close
 
 ```bash
 dlc-ws add-video ws session1-640x360.mp4 --processed --video-id session1 --exist-ok
-rm -r ws/sources/annotations/session1/frames/processed
-dlc-ws extract-frames session1 --project ws      # re-reads the same frames
+dlc-ws extract session1 --project ws --match-original
 dlc-ws train ws
 ```
+
+For a folder of them, `dlc-ws videos ws --register <folder>` replaces the first
+command for every video at once, followed by `dlc-ws extract --all --project ws
+--match-original`.
 
 The labels need no attention: they are converted to whatever processed video is
 registered when you train, including labels that an earlier version stored
 already scaled for the old size.
 
 The processed *frames* do need replacing, since the ones on disk were read from
-the old video: delete `frames/processed/` as above and `extract-frames` re-reads
-the same frame indices from the new video. It never reselects frames.
+the old video: `--match-original` re-reads the same frame indices from the new
+video. It never reselects frames.
 
 The conversion is a pure scale. The processed video must show the same field of
 view as the original; a processed video that is *cropped* is not supported.
@@ -427,14 +473,14 @@ registered under its own id instead of the original's.
 ### `N of M labeled frame(s) have no readable image ... left out of training`
 
 Frame files are missing or are broken links. Run
-`dlc-ws extract-frames <video> --project <project>` (without `--overwrite`) and
+`dlc-ws extract <video> --project <project>` (without `--overwrite`) and
 train again.
 
 ### Frames that are symlinks to themselves (`Too many levels of symbolic links`)
 
 Left behind by `dlc-ws annotate` in versions before the link fix, which
 replaced each frame with a link to itself when the annotator closed. The
-labels are intact. `dlc-ws extract-frames` or `dlc-ws annotate` re-reads those
+labels are intact. `dlc-ws extract` or `dlc-ws annotate` re-reads those
 frames from the video at the index in their file name. Do not use
 `--overwrite`.
 

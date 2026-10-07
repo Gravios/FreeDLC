@@ -32,6 +32,11 @@ images -- is re-read from the video at the index its name carries, and processed
 missing for an original (the processed video having been registered after extraction)
 are filled in. Neither changes which frames are selected, so existing labels keep
 pointing at the same images.
+
+``match_original`` goes one step further for a processed video that has been
+*replaced* (another size, another encoding): the whole processed set is read again
+from the video registered now, at the indices of the original frames. The processed
+frames on disk were read from the old video, and nothing about their names says so.
 """
 
 from __future__ import annotations
@@ -216,13 +221,17 @@ def _is_self_link(path: Path) -> bool:
     return target.parent.resolve() == path.parent.resolve()
 
 
-def _complete_existing(project, video_id: str, entries: list[Path]) -> list[Path]:
+def _complete_existing(
+    project, video_id: str, entries: list[Path], *, match_original: bool = False
+) -> list[Path]:
     """Make an already-extracted frame set whole again; return the readable originals.
 
     Restores original frames that have become self-links, then fills in any processed
-    frame missing for a readable original. The selection is left as it is. Links to
-    missing files *outside* the frame set are only reported: their images may differ
-    from the video's (a cropped legacy frame) and may yet come back.
+    frame missing for a readable original -- or, with ``match_original``, replaces the
+    processed set with one read afresh for every readable original. The selection is
+    left as it is. Links to missing files *outside* the frame set are only reported:
+    their images may differ from the video's (a cropped legacy frame) and may yet come
+    back.
     """
     self_links = [p.name for p in entries if _is_self_link(p)]
     if self_links:
@@ -237,6 +246,9 @@ def _complete_existing(project, video_id: str, entries: list[Path]) -> list[Path
 
     if project.has_video(video_id, "processed"):
         proc_dir = project.layout.frames_dir(video_id, "processed")
+        if match_original and frames:
+            for stale in proc_dir.glob("*.png"):  # read from whatever was registered before
+                stale.unlink()
         missing = [p.name for p in frames if not (proc_dir / p.name).is_file()]
         if missing:
             _restore_frames(project, video_id, "processed", missing)
@@ -251,6 +263,7 @@ def extract_frames(
     mode: str = "uniform",
     overwrite: bool = False,
     sample_stride: int | None = None,
+    match_original: bool = False,
 ) -> list[Path]:
     """Extract annotation frames for ``video_id`` into ``sources/annotations/``.
 
@@ -265,6 +278,12 @@ def extract_frames(
         sample_stride: for kmeans only -- decode every Nth frame when clustering.
             ``None`` defaults to roughly one frame per second, which is what keeps
             kmeans from decoding the whole video. Ignored by uniform.
+        match_original: read the processed frames again from the processed video
+            registered now, at the indices of the existing original frames. Use it
+            after replacing the processed video: the selection, the original frames
+            and the labels keyed by their names all stay as they are. Requires a
+            processed video. With no frames extracted yet it changes nothing --
+            a fresh extraction writes matching sets anyway.
 
     Returns:
         The *original* frame paths, sorted. If frames already exist and ``overwrite``
@@ -275,7 +294,8 @@ def extract_frames(
     Raises:
         ValueError: on an unknown ``mode``, an unreadable/empty video, or existing
             frames none of which is readable or could be restored.
-        FileNotFoundError: if the original video is not registered or its media is gone.
+        FileNotFoundError: if the original video is not registered or its media is gone;
+            with ``match_original``, likewise for the processed video.
     """
     import cv2
 
@@ -284,12 +304,16 @@ def extract_frames(
 
     frames_dir = project.layout.frames_dir(video_id, "original")
     entries = sorted(frames_dir.glob("*.png")) if frames_dir.is_dir() else []
+    if match_original:
+        if overwrite:
+            raise ValueError("match_original keeps the selected frames; it cannot be combined with overwrite")
+        resolve_media(project, video_id, "processed")  # fail before any frame is removed
     if entries and not overwrite:
-        frames = _complete_existing(project, video_id, entries)
+        frames = _complete_existing(project, video_id, entries, match_original=match_original)
         if not frames:
             raise ValueError(
                 f"none of the frames in {frames_dir} is readable and they could not be restored; "
-                f"re-run `dlc-ws extract-frames --overwrite` for {video_id!r}"
+                f"re-run `dlc-ws extract --overwrite` for {video_id!r}"
             )
         return frames
 

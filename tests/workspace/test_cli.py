@@ -231,6 +231,107 @@ def test_videos_table_shows_pairing_labels_and_problems():
         assert proj.runs("train") == []
 
 
+def _png_header(width: int, height: int) -> bytes:
+    return (b"\x89PNG\r\n\x1a\n" + (13).to_bytes(4, "big") + b"IHDR"
+            + width.to_bytes(4, "big") + height.to_bytes(4, "big"))
+
+
+def test_videos_register_pairs_a_folder_with_the_originals():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        proj = ws.Project.create(d / "ws", task="reach", bodyparts=["snout"])
+        for src in _make_videos(d / "original", ["Session_1.mp4", "Session_1_b.mp4", "Session_2.mp4"]):
+            proj.add_video(src)
+        small = d / "reduced-640x360"
+        a, b, labeled = _make_videos(
+            small, ["Session_1_640x360.mp4", "Session_1_b-triplet.mp4", "Session_1_640x360.fdlc.mp4"])
+        (small / "notes.txt").write_text("not a video")
+
+        code, out = _run(["videos", str(proj.root), "--register", str(small)])
+        assert code == 0, out
+        assert proj.videos("processed") == ["session-1", "session-1-b"]      # longest id wins for "_b"
+        media = {v: proj.video_media_files(v, "processed")[0] for v in proj.videos("processed")}
+        assert media["session-1"].resolve() == a.resolve() and media["session-1"].is_symlink()
+        assert media["session-1-b"].resolve() == b.resolve()
+        assert "registered 2 processed video(s)" in out and "ignored 1 labeled .fdlc video(s)" in out
+        assert "1 original(s) have no video there and keep what they had (e.g. session-2)" in out
+        assert "--match-original" not in out                                  # no frames extracted yet
+        assert "video id" in out                                               # the table follows
+        stale = proj.layout.frames_dir("session-1", "processed")
+        stale.mkdir(parents=True)
+        (stale / "img1.png").write_bytes(_png_header(640, 360))
+
+        # another folder takes over; the files of the first are left alone
+        other = d / "triplet"
+        (c,) = _make_videos(other, ["Session_1-triplet.mp4"])
+        code, out = _run(["videos", str(proj.root), "--register", str(other), "--link", "copy"])
+        assert code == 0, out
+        assert "re-read them with `dlc-ws extract --all --match-original`" in out
+        now = proj.video_media_files("session-1", "processed")
+        assert len(now) == 1 and not now[0].is_symlink() and now[0].read_bytes() == c.read_bytes()
+        assert a.read_bytes() == b"fake video"
+
+
+def test_videos_register_changes_nothing_unless_the_whole_folder_matches():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        proj = ws.Project.create(d / "ws", task="reach", bodyparts=["snout"])
+        (src,) = _make_videos(d / "original", ["Session_1.mp4"])
+        proj.add_video(src)
+
+        mixed = d / "mixed"
+        _make_videos(mixed, ["Session_1_640x360.mp4", "Stranger.mp4"])
+        code, out = _run(["videos", str(proj.root), "--register", str(mixed)])
+        assert code == 2 and "nothing was changed" in out
+        assert "Stranger.mp4: no original video matches this name" in out
+        assert proj.videos("processed") == []
+
+        twice = d / "twice"
+        _make_videos(twice, ["Session_1_640x360.mp4", "Session_1_320x180.mp4"])
+        code, out = _run(["videos", str(proj.root), "--register", str(twice)])
+        assert code == 2 and "'session-1' is already matched by Session_1_320x180.mp4" in out
+        assert proj.videos("processed") == []
+
+        code, out = _run(["videos", str(proj.root), "--register", str(d / "missing")])
+        assert code == 2 and "not a directory" in out
+        (d / "empty").mkdir()
+        code, out = _run(["videos", str(proj.root), "--register", str(d / "empty")])
+        assert code == 2 and "no video files found" in out
+
+
+def test_videos_notes_processed_frames_and_counts_that_no_longer_fit():
+    from deeplabcut.workspace.manifest import write_manifest
+    from deeplabcut.workspace.schema import VideoRecord
+
+    with tempfile.TemporaryDirectory() as d:
+        proj = ws.Project.create(Path(d) / "ws", task="reach", bodyparts=["snout"])
+        lay = proj.layout
+
+        def register(vid, kind, w, h, n):
+            rec = VideoRecord(video_id=vid, source_path=f"{kind}.mp4", width=w, height=h, n_frames=n,
+                              link="reference")
+            write_manifest(lay.video_toml(vid, kind), rec.to_dict())
+
+        def frame(vid, w, h):
+            fdir = lay.frames_dir(vid, "processed")
+            fdir.mkdir(parents=True)
+            (fdir / "img1.png").write_bytes(_png_header(w, h))
+
+        for vid, n_processed, frame_size in (("fits", 100, (640, 360)), ("stale", 100, (192, 108)),
+                                             ("short", 90, (640, 360))):
+            register(vid, "original", 1920, 1080, 100)
+            register(vid, "processed", 640, 360, n_processed)
+            frame(vid, *frame_size)
+
+        code, out = _run(["videos", str(proj.root)])
+        assert code == 0
+        notes = [line for line in out.splitlines() if line.startswith("  !")]
+        assert len(notes) == 2, out
+        assert ("! stale: processed frames are 192x108 but the processed video is 640x360 "
+                "(run `dlc-ws extract stale --match-original`)") in out
+        assert "! short: processed video has 90 frames, the original 100" in out
+
+
 def test_no_command_prints_help():
     code, _ = _run([])
     assert code == 2

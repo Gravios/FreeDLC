@@ -328,7 +328,7 @@ def test_extract_all_covers_every_video():
     with tempfile.TemporaryDirectory() as d:
         d = Path(d)
         proj = _project_with_n_videos(d, ["a", "b", "c"])
-        code, out = _run(["extract-frames", "--all", "--project", str(d / "ws"), "-n", "5"])
+        code, out = _run(["extract", "--all", "--project", str(d / "ws"), "-n", "5"])
         assert code == 0, out
         assert "3/3 video(s)" in out
         for v in ("a", "b", "c"):
@@ -613,6 +613,92 @@ def test_resolve_media_ignores_video_toml():
         late.write_bytes(src.read_bytes())
         vid = proj.add_video(late, link="symlink")
         assert frames_mod.resolve_media(proj, vid).name == "video.webm"
+
+
+# ------------------------------------------------ extract --match-original
+def _frame_sizes(directory: Path) -> set[tuple[int, int]]:
+    import cv2
+
+    return {cv2.imread(str(f)).shape[1::-1] for f in directory.glob("*.png")}
+
+
+def test_match_original_rereads_processed_frames_from_the_new_video():
+    """Replacing the processed video keeps the selection; only its frames are re-read."""
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        proj, vid = _project_with_pair(d, orig=(160, 120), proc=(80, 60))
+        orig = frames_mod.extract_frames(proj, vid, n=5)
+        before = {p.name: p.read_bytes() for p in orig}
+        proc_dir = proj.layout.frames_dir(vid, "processed")
+        assert _frame_sizes(proc_dir) == {(80, 60)}
+
+        new = _make_video(d / "smaller" / "Clip 01.mp4", n_frames=40, size=(40, 30))
+        proj.add_video(new, kind="processed", link="copy", exist_ok=True)
+
+        assert frames_mod.extract_frames(proj, vid) == orig             # complete: nothing to fill in
+        assert _frame_sizes(proc_dir) == {(80, 60)}                    # ...but read from the old video
+        (proc_dir / "img9999.png").write_bytes(b"left over")           # matches no original
+
+        assert frames_mod.extract_frames(proj, vid, match_original=True) == orig
+        assert sorted(p.name for p in proc_dir.glob("*.png")) == sorted(before)
+        assert _frame_sizes(proc_dir) == {(40, 30)}
+        assert {p.name: p.read_bytes() for p in orig} == before         # originals untouched
+
+
+def test_match_original_needs_a_processed_video_and_keeps_the_selection():
+    with tempfile.TemporaryDirectory() as d:
+        proj, vid = _project_with_video(Path(d))
+        frames = frames_mod.extract_frames(proj, vid, n=4)
+        try:
+            frames_mod.extract_frames(proj, vid, match_original=True)
+        except FileNotFoundError as err:
+            assert "processed video" in str(err)
+        else:
+            raise AssertionError("expected FileNotFoundError")
+        assert all(p.is_file() for p in frames)
+
+    with tempfile.TemporaryDirectory() as d:
+        proj, vid = _project_with_pair(Path(d))
+        try:
+            frames_mod.extract_frames(proj, vid, match_original=True, overwrite=True)
+        except ValueError as err:
+            assert "overwrite" in str(err)
+        else:
+            raise AssertionError("expected ValueError")
+
+
+def test_match_original_without_frames_is_a_plain_extraction():
+    with tempfile.TemporaryDirectory() as d:
+        proj, vid = _project_with_pair(Path(d), proc=(80, 60))
+        orig = frames_mod.extract_frames(proj, vid, n=4, match_original=True)
+        assert len(orig) == 4
+        assert _frame_sizes(proj.layout.frames_dir(vid, "processed")) == {(80, 60)}
+
+
+def test_extract_match_original_cli():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        proj, vid = _project_with_pair(d, orig=(160, 120), proc=(80, 60))
+        proj.add_video(_make_video(d / "orig" / "alone.mp4", n_frames=30), link="copy")   # no processed
+        ws = str(d / "ws")
+        assert _run(["extract", "--all", "--project", ws, "-n", "4"])[0] == 0
+        proj.add_video(_make_video(d / "smaller" / "Clip 01.mp4", n_frames=40, size=(40, 30)),
+                       kind="processed", link="copy", exist_ok=True)
+        proc_dir = proj.layout.frames_dir(vid, "processed")
+
+        code, out = _run(["extract", "--all", "--project", ws, "--match-original"])
+        assert code == 0, out
+        assert "skipping 1 video(s) with no processed video (e.g. alone)" in out
+        assert f"{vid}: matched to the original 4 frame(s)" in out and "1/1 video(s)" in out
+        assert _frame_sizes(proc_dir) == {(40, 30)}
+
+        code, out = _run(["extract", "alone", "--project", ws, "--match-original"])
+        assert code == 2 and "processed video 'alone' is not registered" in out
+        code, out = _run(["extract", vid, "--project", ws, "--match-original", "--overwrite"])
+        assert code == 2 and "give one" in out
+        # the long name still works
+        code, out = _run(["extract-frames", vid, "--project", ws, "--match-original"])
+        assert code == 0 and str(proc_dir) in out
 
 
 if __name__ == "__main__":

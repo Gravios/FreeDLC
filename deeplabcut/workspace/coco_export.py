@@ -238,7 +238,7 @@ def export_coco_dataset(
         if len(present) < len(names):
             log.warning(
                 "%s: %d of %d labeled frame(s) have no readable image in %s and are left out "
-                "of training; run `dlc-ws extract-frames %s` to restore them",
+                "of training; run `dlc-ws extract %s` to restore them",
                 vid, len(names) - len(present), len(names), src_dir, vid,
             )
             df = df[df["image"].isin(present)]

@@ -5,7 +5,7 @@
 
 Thin wrappers around the workspace API: ``create``, ``list``,
 ``export-skeleton``, ``migrate``, ``info``, ``models``, ``add-video``, ``videos``,
-``extract-frames``, ``annotate``, ``apply``,
+``extract``, ``annotate``, ``apply``,
 ``label``, ``track``, ``export``, ``train``, ``evaluate``. Uses only argparse (no
 extra dependencies), and each handler calls a single workspace function, so
 parsing and dispatch are testable without torch; the
@@ -185,21 +185,22 @@ def _open_project(project_arg: str):
 
 def _extract_one(args_tuple):
     """Worker: extract one video in its own process. Returns (video_id, count_or_error)."""
-    project_root, video_id, n, mode, overwrite, sample_stride = args_tuple
+    project_root, video_id, n, mode, overwrite, sample_stride, match_original = args_tuple
     from .frames import extract_frames
     from .project import Project
 
     try:
         project = Project.open(project_root)
         written = extract_frames(
-            project, video_id, n=n, mode=mode, overwrite=overwrite, sample_stride=sample_stride
+            project, video_id, n=n, mode=mode, overwrite=overwrite, sample_stride=sample_stride,
+            match_original=match_original,
         )
         return (video_id, len(written), None)
     except (FileNotFoundError, ValueError, OSError) as err:
         return (video_id, None, str(err))
 
 
-def cmd_extract_frames(args) -> int:
+def cmd_extract(args) -> int:
     from .annotate import resolve_video_id
     from .frames import extract_frames
 
@@ -208,6 +209,9 @@ def cmd_extract_frames(args) -> int:
         return 2
     if not args.all and not args.video:
         print("give a video id/path, or --all to extract from every registered video")
+        return 2
+    if args.match_original and args.overwrite:
+        print("--match-original keeps the selected frames and --overwrite replaces them; give one")
         return 2
 
     try:
@@ -220,6 +224,16 @@ def cmd_extract_frames(args) -> int:
     if not video_ids:
         print("no registered videos to extract from; run `dlc-ws add-video` first")
         return 2
+    if args.all and args.match_original:
+        # nothing to match for a video without a processed counterpart
+        unpaired = [v for v in video_ids if not project.has_video(v, "processed")]
+        video_ids = [v for v in video_ids if v not in unpaired]
+        if unpaired:
+            print(f"skipping {len(unpaired)} video(s) with no processed video (e.g. {unpaired[0]})")
+        if not video_ids:
+            print("no video has a processed video to match; see `dlc-ws videos --register`")
+            return 2
+    done = "matched to the original" if args.match_original else "extracted"
 
     jobs = max(1, args.jobs)
     failures = 0
@@ -230,26 +244,29 @@ def cmd_extract_frames(args) -> int:
         import concurrent.futures as cf
 
         root = str(project.layout.root)
-        work = [(root, v, args.n, args.mode, args.overwrite, args.sample_stride) for v in video_ids]
+        work = [(root, v, args.n, args.mode, args.overwrite, args.sample_stride, args.match_original)
+                for v in video_ids]
         with cf.ProcessPoolExecutor(max_workers=min(jobs, len(video_ids))) as pool:
             for video_id, count, err in pool.map(_extract_one, work):
                 if err is not None:
                     print(f"{video_id}: {err}")
                     failures += 1
                 else:
-                    print(f"{video_id}: extracted {count} frame(s)")
+                    print(f"{video_id}: {done} {count} frame(s)")
     else:
         for video_id in video_ids:
             try:
                 written = extract_frames(
                     project, video_id, n=args.n, mode=args.mode,
                     overwrite=args.overwrite, sample_stride=args.sample_stride,
+                    match_original=args.match_original,
                 )
             except (FileNotFoundError, ValueError, OSError) as err:
                 print(f"{video_id}: {err}")
                 failures += 1
                 continue
-            print(f"{video_id}: extracted {len(written)} frame(s) -> {project.layout.frames_dir(video_id)}")
+            kind = "processed" if args.match_original else "original"
+            print(f"{video_id}: {done} {len(written)} frame(s) -> {project.layout.frames_dir(video_id, kind)}")
 
     if args.all:
         print(f"done: {len(video_ids) - failures}/{len(video_ids)} video(s), mode: {args.mode}, jobs: {jobs}")
@@ -389,6 +406,56 @@ def cmd_add_video(args) -> int:
     return 0
 
 
+def _png_size(path: Path) -> tuple[int, int] | None:
+    """``(width, height)`` from a PNG's header, or ``None`` if ``path`` is not a PNG."""
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(24)
+    except OSError:
+        return None
+    if len(head) < 24 or head[:8] != b"\x89PNG\r\n\x1a\n" or head[12:16] != b"IHDR":
+        return None
+    return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+
+
+def _register_processed(project, directory: str, link: str) -> int:
+    """Make the videos in ``directory`` the processed videos of the originals they match."""
+    folder = Path(directory).expanduser()
+    if not folder.is_dir():
+        print(f"not a directory: {folder}")
+        return 2
+    found = collect_videos([folder])
+    # rendered `apply --labeled-video` / `label` output, never a source video
+    files = [f for f in found if not f.stem.endswith(".fdlc")]
+    if not files:
+        print(f"no video files found in {folder}")
+        return 2
+    pairs, problems = project.match_originals(files)
+    if problems:
+        print(f"{folder} does not line up with the original videos ({len(problems)}); nothing was changed:")
+        for line in problems:
+            print(f"  {line}")
+        return 2
+
+    for vid, file in pairs.items():
+        try:
+            project.add_video(file, video_id=vid, kind="processed", link=link, exist_ok=True)
+        except (FileNotFoundError, ValueError, FileExistsError, OSError) as err:
+            print(f"{file}: {err}")
+            return 2
+        print(f"  {vid} <- {file}")
+    print(f"registered {len(pairs)} processed video(s) from {folder} ({link})")
+    if len(files) < len(found):
+        print(f"ignored {len(found) - len(files)} labeled .fdlc video(s)")
+    left = [v for v in project.videos("original") if v not in pairs]
+    if left:
+        print(f"{len(left)} original(s) have no video there and keep what they had (e.g. {left[0]})")
+    if any(any(project.layout.frames_dir(vid, "processed").glob("*.png")) for vid in pairs):
+        print("the processed frames on disk were read from the previous videos; "
+              "re-read them with `dlc-ws extract --all --match-original`")
+    return 0
+
+
 def _video_row(project, vid: str) -> tuple[list[str], list[str]]:
     """One row of the `videos` table for ``vid``, and the problems found with it."""
     lay, problems = project.layout, []
@@ -404,10 +471,29 @@ def _video_row(project, vid: str) -> tuple[list[str], list[str]]:
         entries = sorted(d.glob("*.png")) if d.is_dir() else []
         broken = sum(1 for f in entries if not f.is_file())
         if broken:
-            problems.append(f"{broken} {kind} frame(s) are broken links (run `dlc-ws extract-frames {vid}`)")
+            problems.append(f"{broken} {kind} frame(s) are broken links (run `dlc-ws extract {vid}`)")
         return str(len(entries) - broken)
 
+    def stale_frames() -> None:
+        """Note processed frames that no longer fit the processed video registered now."""
+        rec = project.video_record(vid, "processed")
+        first = next((f for f in sorted(lay.frames_dir(vid, "processed").glob("*.png")) if f.is_file()), None)
+        dims = _png_size(first) if first else None
+        if dims and rec.width and rec.height and dims != (rec.width, rec.height):
+            problems.append(
+                f"processed frames are {dims[0]}x{dims[1]} but the processed video is {rec.width}x{rec.height} "
+                f"(run `dlc-ws extract {vid} --match-original`)"
+            )
+        n_orig = project.video_record(vid, "original").n_frames if project.has_video(vid, "original") else None
+        if n_orig and rec.n_frames and n_orig != rec.n_frames:
+            problems.append(
+                f"processed video has {rec.n_frames} frames, the original {n_orig}: "
+                "the same frame number may not show the same moment"
+            )
+
     original, processed = size("original"), size("processed")
+    if processed != "-":
+        stale_frames()
     labels = "-"
     if lay.labels_parquet(vid).exists():
         record = project.labels_record(vid)
@@ -424,6 +510,11 @@ def _video_row(project, vid: str) -> tuple[list[str], list[str]]:
 def cmd_videos(args) -> int:
     """List every video id with what is registered, labeled and extracted under it."""
     project = Project.open(args.project)
+    if args.register:
+        code = _register_processed(project, args.register, args.link)
+        if code:
+            return code
+        print()
     header = ["video id", "original", "processed", "labels in", "frames o/p"]
     rows, notes = [], []
     for vid in project.video_ids():
@@ -668,7 +759,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="re-register videos whose id already exists instead of failing")
     p.set_defaults(func=cmd_add_video)
 
-    p = sub.add_parser("extract-frames", help="extract annotation frames from a registered video")
+    p = sub.add_parser("extract", aliases=["extract-frames"],
+                       help="extract annotation frames from a registered video")
     p.add_argument("video", nargs="?", help="registered video id, or a path whose name matches one")
     p.add_argument("--all", action="store_true", help="extract from every registered (original) video")
     p.add_argument("--project", default=".", help="project root or project.toml (default: current directory)")
@@ -680,7 +772,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--jobs", "-j", type=int, default=1,
                    help="with --all, extract this many videos in parallel (one process each)")
     p.add_argument("--overwrite", action="store_true", help="re-extract even if frames already exist")
-    p.set_defaults(func=cmd_extract_frames)
+    p.add_argument("--match-original", action="store_true", dest="match_original",
+                   help="re-read the processed frames from the processed video registered now, at the "
+                        "frames already extracted from the original (keeps the selection and the labels)")
+    p.set_defaults(func=cmd_extract)
 
     p = sub.add_parser("annotate", help="open the napari annotator on a video (extracts frames if needed)")
     p.add_argument("video", help="registered video id, or a path whose name matches one")
@@ -692,6 +787,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("videos", help="list video ids with their registered videos, labels and frames")
     p.add_argument("project")
+    p.add_argument("--register", metavar="DIR",
+                   help="make the videos in DIR the processed videos of the originals their names match; "
+                        "nothing is changed unless every video in DIR matches one")
+    p.add_argument("--link", choices=["symlink", "copy", "reference"], default="symlink",
+                   help="with --register, how to materialize the media (default: symlink)")
     p.set_defaults(func=cmd_videos)
 
     p = sub.add_parser("apply", help="label one or more videos (files, folders, or globs)")
