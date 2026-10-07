@@ -18,6 +18,7 @@ image sizes are deferred to the training driver.
 from __future__ import annotations
 
 import json
+import logging
 import random
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,8 @@ __all__ = [
     "export_coco_dataset",
 ]
 
+
+log = logging.getLogger(__name__)
 
 # The dataset-root shape DeepLabCut's COCOLoader expects: it loads
 # ``<root>/annotations/<json>`` and resolves each ``file_name`` under ``<root>/images/``.
@@ -156,6 +159,9 @@ def export_coco_dataset(
     ``labels.parquet`` (pyarrow, lazy).
 
     Returns ``(train_json_path, test_json_path)``.
+
+    Raises:
+        ValueError: if no labeled frame has a readable image.
     """
     from .evaluate import read_labels
     from .util import materialize
@@ -165,21 +171,35 @@ def export_coco_dataset(
     labels_provider = labels_provider or read_labels
     video_ids = list(video_ids) if video_ids is not None else project.annotated_videos()
 
-    labels_by_video = {vid: labels_provider(project, vid) for vid in video_ids}
+    # Stage each labeled frame at dest/images/<video_id>/<image>, taken from the frame
+    # set that is in the labels' pixel space (frames/processed when annotations were
+    # scaled, frames/original otherwise) so frames and coordinates stay consistent.
+    #
+    # Labels whose frame is not a readable file are left out of the dataset, and said
+    # so here with the remedy: the loader would drop them anyway, but only after the
+    # train/test split, and with a list of paths in the run directory that says
+    # nothing about where the frame should have come from.
+    labels_by_video = {}
+    for vid in video_ids:
+        df = labels_provider(project, vid)
+        src_dir = project.label_frames_dir(vid)
+        names = list(dict.fromkeys(df["image"].tolist()))
+        present = [name for name in names if (src_dir / name).is_file()]
+        for name in present:
+            materialize(src_dir / name, images_root / vid / name, link)
+        if len(present) < len(names):
+            log.warning(
+                "%s: %d of %d labeled frame(s) have no readable image in %s and are left out "
+                "of training; run `dlc-ws extract-frames %s` to restore them",
+                vid, len(names) - len(present), len(names), src_dir, vid,
+            )
+            df = df[df["image"].isin(present)]
+        labels_by_video[vid] = df
+
     coco = labels_to_coco(labels_by_video, project.config.bodyparts, image_dims=image_dims)
+    if not coco["images"]:
+        raise ValueError("no labeled frame has a readable image; there is nothing to train on")
     train, test = split_coco(coco, train_fraction=train_fraction, seed=seed)
     train_path = write_coco_json(train, dest / ANNOTATIONS_DIRNAME / TRAIN_JSON)
     test_path = write_coco_json(test, dest / ANNOTATIONS_DIRNAME / TEST_JSON)
-
-    # materialize frames at dest/images/<video_id>/<image>, taken from the frame set
-    # that is in the labels' pixel space (frames/processed when annotations were
-    # scaled, frames/original otherwise) so frames and coordinates stay consistent.
-    for vid in video_ids:
-        src_dir = project.label_frames_dir(vid)
-        dst_dir = images_root / vid
-        dst_dir.mkdir(parents=True, exist_ok=True)
-        for frame in (src_dir.iterdir() if src_dir.is_dir() else []):
-            if not frame.is_file():
-                continue
-            materialize(frame, dst_dir / frame.name, link)
     return train_path, test_path

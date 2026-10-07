@@ -122,6 +122,39 @@ def test_export_coco_dataset_stages_json_and_frames():
         assert json.loads(train_json.read_text())["images"][0]["file_name"] == "v1/i1.png"
 
 
+def test_export_leaves_out_labels_without_a_readable_frame():
+    # a labeled frame that is missing or a dead link must not reach the dataset: the
+    # loader would drop it after the split, shrinking train/test behind our back.
+    with tempfile.TemporaryDirectory() as d:
+        proj = ws.Project.create(Path(d) / "ws", task="reach", bodyparts=["snout", "paw"])
+        frames = proj.layout.frames_dir("v1")
+        frames.mkdir(parents=True)
+        (frames / "i1.png").write_bytes(b"px")
+        (frames / "i2.png").symlink_to(frames / "i2.png")      # a link to itself
+        (frames / "unlabeled.png").write_bytes(b"px")
+        df = _labels(["i1.png", "i2.png", "i3.png"], ["single"], ["snout", "paw"])
+
+        train_json, _ = coco_export.export_coco_dataset(
+            proj, Path(d) / "dataset", video_ids=["v1"],
+            train_fraction=1.0, seed=0, labels_provider=lambda p, v: df,
+        )
+        coco = json.loads(train_json.read_text())
+        assert [im["file_name"] for im in coco["images"]] == ["v1/i1.png"]
+        assert len(coco["annotations"]) == 1
+        staged = sorted(p.name for p in (Path(d) / "dataset" / "images" / "v1").iterdir())
+        assert staged == ["i1.png"]                              # only labeled, readable frames
+
+        (frames / "i1.png").unlink()
+        try:
+            coco_export.export_coco_dataset(
+                proj, Path(d) / "dataset2", video_ids=["v1"], labels_provider=lambda p, v: df,
+            )
+        except ValueError as err:
+            assert "nothing to train on" in str(err)
+        else:
+            raise AssertionError("expected ValueError")
+
+
 def _register_dims(proj, vid, kind, w, h):
     """Write a video.toml with known dimensions, so annotation_scale can be derived."""
     rec = VideoRecord(video_id=vid, source_path=f"{kind}.mp4", width=w, height=h, link="reference")
