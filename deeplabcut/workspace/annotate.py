@@ -150,12 +150,12 @@ def annotate_video(
     """Extract-if-needed, launch napari to annotate ``video``, and ingest labels on close.
 
     Frames are staged from the *original* video so markers are placed on full-resolution
-    images. napari saves a CollectedData in that original pixel space (a self-consistent
-    legacy artifact). On close it is ingested into ``sources/annotations/<id>/labels.parquet``
-    with coordinates scaled to the *processed* space -- the space the model trains on --
-    using the project's per-video ``(scale_x, scale_y)``. The scale transform lives here,
-    not in napari: napari shows original frames, so writing processed coordinates into a
-    CollectedData that references those frames would make it internally inconsistent.
+    images, and the labels are stored as placed: ``labels.parquet`` holds original-pixel
+    coordinates and ``labels.toml`` says so. They are not scaled to the processed video
+    here. Which frame set a model trains on is chosen at training time, and the
+    conversion belongs there: stored in the pixels they were drawn in, the labels stay
+    valid when the processed video is replaced by one of another size, and what is on
+    disk is what the annotator saw.
 
     Only the labels are ingested. The frames napari showed are the workspace's own
     ``frames/original/`` files, reached through the staging symlinks, so there is
@@ -172,18 +172,15 @@ def annotate_video(
 
     _launch(config_path, dataset_dir)
 
-    # napari has closed: pull whatever labels were saved into the workspace,
-    # scaling original-space coordinates into processed space on the way in.
+    # napari has closed: pull whatever labels were saved into the workspace, in the
+    # pixels they were placed in. Nothing is scaled here; `train` and `evaluate`
+    # convert to the frame set they are asked to use.
     collected = find_collected_data(dataset_dir)
     if collected is None:
         log.info("no CollectedData written for %s; nothing to ingest", video_id)
         return video_id
-    scale_x, scale_y = project.annotation_scale(video_id)
-    long, _ = ingest_video_annotations(
-        project, video_id, collected, None, scale=(scale_x, scale_y)
-    )
+    long, _ = ingest_video_annotations(project, video_id, collected, None)
     n_images = len(dict.fromkeys(long["image"].tolist()))
-    space = "processed" if (scale_x, scale_y) != (1.0, 1.0) else "original"
-    log.info("ingested %d annotated frame(s) in %s space -> %s",
-             n_images, space, project.layout.labels_parquet(video_id))
+    log.info("ingested %d annotated frame(s) in original pixels -> %s",
+             n_images, project.layout.labels_parquet(video_id))
     return video_id

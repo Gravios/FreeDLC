@@ -356,6 +356,20 @@ def test_export_file_report_names_labels_frames_and_dataset():
             assert needed in out, f"{needed!r} missing from:\n{out}"
 
 
+def test_processed_space_labels_follow_a_replaced_processed_video():
+    # labels stored for a 192x108 processed video (scale 0.1); the processed video is
+    # then re-registered at 640x360. "processed" means the video as it is now, so the
+    # stored coordinates are rescaled through original pixels instead of reused as-is.
+    with tempfile.TemporaryDirectory() as d:
+        proj = _paired_project(Path(d), space="processed")
+        assert proj.labels_scale_to("v1", "processed") == (1.0, 1.0)      # same size: exact identity
+        _register_dims(proj, "v1", "processed", 640, 360)
+        fx, fy = proj.labels_scale_to("v1", "processed")
+        assert abs(fx - 640 / 192) < 1e-9 and abs(fy - 360 / 108) < 1e-9
+        fx, fy = proj.labels_scale_to("v1", "original")                   # unaffected by the swap
+        assert abs(fx - 10.0) < 1e-9 and abs(fy - 10.0) < 1e-9
+
+
 def test_labels_without_a_record_fall_back_to_the_pairing():
     with tempfile.TemporaryDirectory() as d:
         proj = _paired_project(Path(d), space=None)

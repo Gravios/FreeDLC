@@ -411,8 +411,9 @@ def _video_row(project, vid: str) -> tuple[list[str], list[str]]:
     labels = "-"
     if lay.labels_parquet(vid).exists():
         record = project.labels_record(vid)
-        # "?" marks a space inferred from the current pairing: no labels.toml was written
-        labels = record.space + ("" if lay.labels_toml(vid).exists() else "?")
+        # the pixels the labels are *stored* in -- not which video was annotated (always
+        # the original). "?" marks a space inferred from the pairing: no labels.toml.
+        labels = record.space + " px" + ("" if lay.labels_toml(vid).exists() else "?")
         if original == "-":
             problems.append("has labels but no original video is registered under this id")
     if original == "-" and processed != "-":
@@ -423,7 +424,7 @@ def _video_row(project, vid: str) -> tuple[list[str], list[str]]:
 def cmd_videos(args) -> int:
     """List every video id with what is registered, labeled and extracted under it."""
     project = Project.open(args.project)
-    header = ["video id", "original", "processed", "labels", "frames o/p"]
+    header = ["video id", "original", "processed", "labels in", "frames o/p"]
     rows, notes = [], []
     for vid in project.video_ids():
         row, problems = _video_row(project, vid)

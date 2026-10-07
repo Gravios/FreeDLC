@@ -65,16 +65,18 @@ Without `--video-id`, the second file would be registered as a separate video
 extracted under it, and points out what does not fit together:
 
 ```text
-video id          original   processed  labels      frames o/p
-session1          1920x1080  192x108    processed   20/20
-session2          1920x1080  -          original    20/0
-session3-192x108  -          192x108    original?   0/0
+video id          original   processed  labels in     frames o/p
+session1          1920x1080  192x108    original px   20/20
+session2          1920x1080  -          original px   20/0
+session3-192x108  -          192x108    original px?  0/0
   ! session3-192x108: has labels but no original video is registered under this id
   ! session3-192x108: processed video has no original with the same id (see `add-video --video-id`)
 ```
 
-`labels` is the pixel space the labels are stored in; a trailing `?` means there
-is no `labels.toml` and the space is inferred from the current pairing.
+`labels in` is the pixel space the coordinates are *stored* in -- not which video
+was annotated, which is always the original. It does not limit what you can train
+on. A trailing `?` means there is no `labels.toml` and the space is inferred from
+the current pairing.
 `frames o/p` counts the readable frames in `frames/original/` and
 `frames/processed/`.
 
@@ -119,13 +121,18 @@ frames. Save the keypoints layer in napari (File > Save Selected Layer(s), Ctrl+
 then close the window. On close the labels are
 read into the workspace:
 
-- `labels.parquet` -- the annotations in long form;
-- `labels.toml` -- the pixel space they are stored in, and the scale applied.
+- `labels.parquet` -- the annotations in long form, in the pixels of the original
+  frames you placed them on;
+- `labels.toml` -- a record of that pixel space (`space = "original"`).
 
-If the video has a processed counterpart, coordinates are multiplied by
-`processed size / original size` (x and y separately) on the way in, and
-`labels.toml` says `space = "processed"`. Otherwise they are stored unscaled and
-it says `space = "original"`.
+Having a processed video does not change what is stored. The coordinates are
+converted to the processed frames when a model is trained or evaluated on them
+(see `--frames`), so the labels stay valid if you later replace the processed
+video with one of a different size.
+
+Projects annotated with earlier versions may hold labels that were scaled to the
+processed video when they were saved (`space = "processed"`, with the scale
+used). They keep working: the record says how to convert them.
 
 The annotator itself only ever sees `.annotate/<video_id>/`, a staging directory
 holding a synthesized `config.yaml`, symlinks to the frames, and the
@@ -229,7 +236,7 @@ $ dlc-ws train ws --verbose
 project /data/ws
 frame set: processed
 video session1: 20 labeled frame(s)
-  labels  /data/ws/sources/annotations/session1/labels.parquet (stored in processed pixels)
+  labels  /data/ws/sources/annotations/session1/labels.parquet (stored in original pixels, coordinates x0.1 y0.1)
   frames  /data/ws/sources/annotations/session1/frames/processed
 dataset /data/ws/runs/train/<run_id>/dataset
   train   /data/ws/runs/train/<run_id>/dataset/annotations/train.json (19 image(s))
@@ -251,7 +258,7 @@ trained -> models/<model_id> (processed frames)
 ```
 
 Paths are absolute. When the labels are converted for the chosen frame set, the
-`labels` line says so (`stored in processed pixels, coordinates x2 y2`). For `apply` the report
+`labels` line says so (`stored in original pixels, coordinates x0.1 y0.1`). For `apply` the report
 names the bundle's config and the snapshot used, each input video (with the file
 a symlink resolves to), and the pose file, record and labeled video written for
 it. For `label` it names the video, the pose file, where the marker names and
@@ -321,7 +328,7 @@ not by their pixel errors.
 
 ### Projects without processed videos
 
-Nothing is scaled at annotation time and there are no processed frames, so the
+There are no processed frames to train on, so the
 default cannot be used. Pass the flag on every run:
 
 ```bash
@@ -354,6 +361,26 @@ processed video:
 dlc-ws annotate session1 --project ws    # save, close
 ```
 
+### Replacing the processed video with one of another size
+
+```bash
+dlc-ws add-video ws session1-640x360.mp4 --processed --video-id session1 --exist-ok
+rm -r ws/sources/annotations/session1/frames/processed
+dlc-ws extract-frames session1 --project ws      # re-reads the same frames
+dlc-ws train ws
+```
+
+The labels need no attention: they are converted to whatever processed video is
+registered when you train, including labels that an earlier version stored
+already scaled for the old size.
+
+The processed *frames* do need replacing, since the ones on disk were read from
+the old video: delete `frames/processed/` as above and `extract-frames` re-reads
+the same frame indices from the new video. It never reselects frames.
+
+The conversion is a pure scale. The processed video must show the same field of
+view as the original; a processed video that is *cropped* is not supported.
+
 ### Which space are my labels in?
 
 ```bash
@@ -362,9 +389,9 @@ cat ws/sources/annotations/session1/labels.toml
 
 ```toml
 video_id = "session1"
-space = "processed"
-scale_x = 0.5
-scale_y = 0.5
+space = "original"
+scale_x = 1.0
+scale_y = 1.0
 ```
 
 ## Troubleshooting

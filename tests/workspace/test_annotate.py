@@ -266,26 +266,26 @@ def test_extract_writes_both_frame_sets():
         assert cv2.imread(str(proc[0])).shape[1] < cv2.imread(str(orig[0])).shape[1]
 
 
-def test_annotate_scales_labels_into_processed_space():
+def test_annotate_stores_labels_in_the_pixels_they_were_drawn_in():
+    """A processed counterpart does not change what annotate stores; training converts."""
     with tempfile.TemporaryDirectory() as d:
         proj, vid = _project_with_pair(Path(d), orig=(160, 120), proc=(80, 30))
-
-        captured = {}
 
         def fake_launch(config_path, dataset_dir):
             # label every frame at a known ORIGINAL-space point, like napari would
             _fake_napari_at(config_path, dataset_dir, x=100.0, y=80.0)
-            captured["dir"] = dataset_dir
 
         ann.annotate_video(proj, vid, n=5, _launch=fake_launch)
         df = pd.read_parquet(proj.layout.labels_parquet(vid))
-        # 100*0.5 = 50, 80*0.25 = 20  -- anisotropic scale applied correctly
-        assert (df["x"].dropna().round(6) == 50.0).all()
-        assert (df["y"].dropna().round(6) == 20.0).all()
-        # ...and the space the labels are now in is recorded with the scale used
+        assert (df["x"].dropna().round(6) == 100.0).all()          # as placed, not scaled
+        assert (df["y"].dropna().round(6) == 80.0).all()
         rec = proj.labels_record(vid)
         assert proj.layout.labels_toml(vid).is_file()
-        assert (rec.space, rec.scale_x, rec.scale_y) == ("processed", 0.5, 0.25)
+        assert (rec.space, rec.scale_x, rec.scale_y) == ("original", 1.0, 1.0)
+        # the anisotropic scale is applied when the processed frames are asked for
+        assert proj.labels_scale_to(vid, "processed") == (0.5, 0.25)   # 80/160, 30/120 -- x != y
+        assert proj.labels_scale_to(vid, "original") == (1.0, 1.0)
+        assert proj.label_frames_kind(vid) == "original"
 
 
 def _fake_napari_at(config_path: Path, dataset_dir: Path, *, x: float, y: float):

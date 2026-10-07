@@ -253,8 +253,9 @@ class Project:
 
         ``frames`` is ``"original"``, ``"processed"``, or ``None`` for "whatever the
         labels are stored in" (identity). The stored space comes from
-        :meth:`labels_record`; going to the other one multiplies or divides by the
-        original->processed scale.
+        :meth:`labels_record`. ``"processed"`` always means the processed video as
+        registered now, so processed-space labels written for a processed video of
+        another size are rescaled too.
 
         Raises:
             ValueError: on an unknown ``frames``, or when the other space cannot be
@@ -267,24 +268,34 @@ class Project:
         if frames not in self.layout.VIDEO_KINDS:
             raise ValueError(f"frames must be one of {self.layout.VIDEO_KINDS}, got {frames!r}")
         record = self.labels_record(video_id)
-        if frames == record.space:
+        if frames == record.space == "original":
             return (1.0, 1.0)
+
+        # Go through original pixels: undo the scale the labels were stored with, then
+        # apply the scale of the processed video as it is registered *now*. The two
+        # differ when the processed video has been replaced by one of another size.
+        to_original = (1.0, 1.0)
+        if record.space == "processed":
+            if not (record.scale_x and record.scale_y):
+                raise ValueError(f"{video_id}: the scale its processed-space labels were written with is unknown")
+            to_original = (1.0 / record.scale_x, 1.0 / record.scale_y)
+        if frames == "original":
+            return to_original
+
         if not self.has_video(video_id, "original"):
             # the scale is the ratio of the two videos; without the original there is none
             raise ValueError(
                 f"{video_id}: its labels are in {record.space} pixels and no original video is "
                 f"registered under this id, so they cannot be converted"
             )
-        if frames == "processed":
-            if not self.has_video(video_id, "processed"):
-                raise ValueError(f"{video_id}: no processed video is registered")
-            orig, proc = self.video_record(video_id, "original"), self.video_record(video_id, "processed")
-            if not (orig.width and orig.height and proc.width and proc.height):
-                raise ValueError(f"{video_id}: original/processed video dimensions are unknown")
-            return (proc.width / orig.width, proc.height / orig.height)
-        if not (record.scale_x and record.scale_y):
-            raise ValueError(f"{video_id}: the scale its processed-space labels were written with is unknown")
-        return (1.0 / record.scale_x, 1.0 / record.scale_y)
+        if not self.has_video(video_id, "processed"):
+            raise ValueError(f"{video_id}: no processed video is registered")
+        orig, proc = self.video_record(video_id, "original"), self.video_record(video_id, "processed")
+        if not (orig.width and orig.height and proc.width and proc.height):
+            raise ValueError(f"{video_id}: original/processed video dimensions are unknown")
+        factor = (to_original[0] * proc.width / orig.width, to_original[1] * proc.height / orig.height)
+        # labels already stored at the current processed size: exactly identity, not 0.999...
+        return tuple(1.0 if abs(f - 1.0) < 1e-9 else f for f in factor)
 
     def check_frames(self, video_ids: Iterable[str], frames: str | None) -> None:
         """Raise one ``ValueError`` naming every video whose labels cannot be put on ``frames``."""

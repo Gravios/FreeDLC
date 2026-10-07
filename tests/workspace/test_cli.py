@@ -217,8 +217,8 @@ def test_videos_table_shows_pairing_labels_and_problems():
         code, out = _run(["videos", str(proj.root)])
         assert code == 0
         rows = {line.split()[0]: line.split() for line in out.splitlines() if not line.startswith("  !")}
-        assert rows["paired"][1:] == ["1920x1080", "192x108", "processed", "1/0"]
-        assert rows["small-192x108"][1:] == ["-", "192x108", "original?", "0/0"]   # "?": space inferred
+        assert rows["paired"][1:] == ["1920x1080", "192x108", "processed", "px", "1/0"]
+        assert rows["small-192x108"][1:] == ["-", "192x108", "original", "px?", "0/0"]   # "?": inferred
         assert "! paired: 1 original frame(s) are broken links" in out
         assert "! small-192x108: has labels but no original video is registered under this id" in out
         assert "! small-192x108: processed video has no original with the same id" in out
