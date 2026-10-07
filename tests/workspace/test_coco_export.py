@@ -316,6 +316,7 @@ def test_check_frames_names_every_video_that_cannot_be_used():
             msg = str(err)
             assert "2 video(s)" in msg and "a: no processed" in msg and "b: no processed" in msg
             assert "--frames original" in msg
+            assert "add-video <project> <video> --processed --video-id <id>" in msg   # real syntax
         else:
             raise AssertionError("expected ValueError")
         try:
