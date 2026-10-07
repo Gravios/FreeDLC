@@ -70,6 +70,44 @@ def test_labels_to_coco_unlabeled_visibility():
     assert a["keypoints"] == [5.0, 6.0, 2, 0.0, 0.0, 0] and a["num_keypoints"] == 1
 
 
+def test_labels_to_coco_gives_every_annotation_a_usable_bbox():
+    """Regression: DeepLabCut's COCOLoader throws away annotations with an empty bbox.
+
+    The export used to write ``"bbox": []``, so every label was discarded and the
+    trainer learned from blank targets. The loader's own filter is reproduced here
+    (``np.all(keypoints <= 0) or len(bbox) == 0``) so the test fails if it would bite.
+    """
+    df = pd.DataFrame([   # both keypoints on one row of pixels: bare extents would be 0 high
+        {"image": "i1", "individual": "single", "bodypart": "snout", "x": 100.0, "y": 50.0},
+        {"image": "i1", "individual": "single", "bodypart": "paw", "x": 140.0, "y": 50.0},
+    ])
+    coco = coco_export.labels_to_coco({"v1": df}, ["snout", "paw"], image_dims={"v1/i1": (192, 108)})
+    (a,) = coco["annotations"]
+    assert not (all(v <= 0 for v in a["keypoints"]) or len(a["bbox"]) == 0)     # survives the loader
+    x, y, w, h = a["bbox"]
+    assert w > 0 and h > 0 and a["area"] == w * h
+    assert x <= 100.0 and x + w >= 140.0 and y <= 50.0 <= y + h                 # encloses the keypoints
+    assert x >= 0 and y >= 0 and x + w <= 192 and y + h <= 108                   # clipped to the image
+    # without known image size nothing is clipped, but the box is still valid
+    (b,) = coco_export.labels_to_coco({"v1": df}, ["snout", "paw"])["annotations"]
+    assert b["bbox"] == [80.0, 30.0, 80.0, 40.0]
+
+
+def test_labels_to_coco_drops_what_was_never_labeled():
+    """An extracted-but-unlabeled frame must not become a 'nothing here' training example."""
+    nan = float("nan")
+    df = pd.DataFrame([
+        {"image": "labeled", "individual": "m1", "bodypart": "snout", "x": 5.0, "y": 6.0},
+        {"image": "labeled", "individual": "m2", "bodypart": "snout", "x": nan, "y": nan},
+        {"image": "blank", "individual": "m1", "bodypart": "snout", "x": nan, "y": nan},
+        {"image": "blank", "individual": "m2", "bodypart": "snout", "x": nan, "y": nan},
+    ])
+    coco = coco_export.labels_to_coco({"v1": df}, ["snout"])
+    assert [im["file_name"] for im in coco["images"]] == ["v1/labeled"]
+    assert len(coco["annotations"]) == 1 and coco["annotations"][0]["num_keypoints"] == 1
+    assert coco["annotations"][0]["image_id"] == coco["images"][0]["id"]
+
+
 def test_labels_to_coco_multi_individual():
     df = _labels(["i1"], ["m1", "m2"], ["snout"])
     coco = coco_export.labels_to_coco({"v1": df}, ["snout"])

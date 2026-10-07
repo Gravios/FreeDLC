@@ -67,8 +67,12 @@ def train_in_workspace(project, run, config) -> Path:
 
     from .coco_export import TEST_JSON, TRAIN_JSON, export_coco_dataset, workspace_to_dlc_project_dict
 
-    dataset_dir = run.dir / "dataset"
-    train_dir = run.dir / "train"
+    # Absolute: the loader rewrites each image's file_name to <dataset>/images/<name>
+    # every time it loads the data, and only leaves absolute paths alone. With a
+    # relative project root a second load would prefix the paths twice.
+    run_dir = run.dir.resolve()
+    dataset_dir = run_dir / "dataset"
+    train_dir = run_dir / "train"
     train_dir.mkdir(parents=True, exist_ok=True)
 
     video_ids = project.annotated_videos()
@@ -90,7 +94,17 @@ def train_in_workspace(project, run, config) -> Path:
     loader = COCOLoader(dataset_dir, model_config=pose_cfg,
                         train_json_filename=TRAIN_JSON, test_json_filename=TEST_JSON)
 
-    # Apply TrainConfig overrides onto the config, exactly as train_network does.
+    # Check what the loader will actually feed the trainer. It filters annotations by
+    # its own rules, and a dataset it has emptied still "trains" -- every target is
+    # blank, the loss falls to zero, and the model learns to predict nothing.
+    n_images = len(loader.train_json["images"])
+    n_labeled = len({a["image_id"] for a in loader.load_data("train")["annotations"]})
+    if n_labeled < n_images:
+        raise ValueError(
+            f"the loader kept annotations for only {n_labeled} of {n_images} training image(s) "
+            f"in {dataset_dir}; refusing to train on unlabeled images"
+        )
+
     loader.model_cfg.train_settings.batch_size = config.batch_size
     loader.model_cfg.train_settings.epochs = config.epochs
     loader.model_cfg.runner.snapshots.save_epochs = config.save_epochs

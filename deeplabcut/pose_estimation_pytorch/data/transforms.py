@@ -17,6 +17,7 @@ from typing import Any
 import albumentations as A
 import cv2
 import numpy as np
+from albumentations.augmentations.crops import functional as fcrops
 from albumentations.augmentations.geometric import functional as F
 from numpy.typing import NDArray
 from scipy.spatial.distance import pdist, squareform
@@ -260,7 +261,7 @@ class KeypointAwareCrop(A.RandomCrop):
         max_shift: float = 0.4,
         crop_sampling: str = "hybrid",
     ):
-        super().__init__(height, width, always_apply=True)
+        super().__init__(height=height, width=width, p=1.0)
         # Clamp to 40% of crop size to ensure that at least
         # the center keypoint remains visible after the offset is applied.
         self.max_shift = max(0.0, min(max_shift, 0.4))
@@ -276,60 +277,64 @@ class KeypointAwareCrop(A.RandomCrop):
         mat = squareform(d <= radius * radius, checks=False)
         return np.sum(mat, axis=0)
 
-    @property
-    def targets_as_params(self) -> list[str]:
-        return ["image", "keypoints"]
+    def get_params_dependent_on_data(self, params: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
+        """Choose the crop window (albumentations 2.x hook).
 
-    def get_params_dependent_on_targets(self, params: dict[str, Any]) -> dict[str, Any]:
-        img = params["image"]
-        kpts = params["keypoints"]
-        shift_factors = np.random.random(2)
-        shift = self.max_shift * shift_factors * np.array([self.width, self.height])
+        Returns the ``crop_coords`` the base crop applies to the image, boxes and
+        keypoints. The window is placed as before: a centre is drawn (uniformly, or
+        from the keypoints), normalised to the image size, and used as the fractional
+        start of the crop.
+        """
+        h, w = params["shape"][:2]
+        if self.height > h or self.width > w:
+            raise ValueError(
+                f"KeypointAwareCrop: crop size (h={self.height}, w={self.width}) exceeds the image "
+                f"(h={h}, w={w}); pad the image first"
+            )
+
+        rng = self.random_generator
+        kpts = np.asarray(data.get("keypoints", ()), dtype=float)
+        kpts = kpts.reshape(len(kpts), -1)[:, :2] if kpts.size else np.zeros((0, 2))
+        kpts = kpts[~np.isnan(kpts).any(axis=1)]
+
         sampling = self.crop_sampling
-        if self.crop_sampling == "hybrid":
-            sampling = np.random.choice(["uniform", "density"])
+        if sampling == "hybrid":
+            sampling = rng.choice(["uniform", "density"])
         if len(kpts) == 0:
             sampling = "uniform"
+
         if sampling == "uniform":
-            center = np.random.random(2)
+            center = rng.random(2)
         else:
-            h, w = img.shape[:2]
-            kpts = np.array([[k[0], k[1]] for k in kpts])
-            kpts = kpts[~np.isnan(kpts).all(axis=1)]
-            n_kpts = kpts.shape[0]
-            inds = np.arange(n_kpts)
             if sampling == "density":
                 # Points located close to one another are sampled preferentially
                 # in order to augment crowded regions.
                 radius = 0.1 * min(h, w)
-                n_neighbors = self.calc_n_neighbors(kpts, radius)
                 # Include keypoints in the count to avoid null probabilities
-                n_neighbors += 1
+                n_neighbors = self.calc_n_neighbors(kpts, radius) + 1
                 p = n_neighbors / n_neighbors.sum()
             else:
-                p = np.ones_like(inds) / n_kpts
-            center = kpts[np.random.choice(inds, p=p)]
+                p = np.full(len(kpts), 1.0 / len(kpts))
             # Shift the crop center in both dimensions by random amounts
             # and normalize to the original image dimensions.
-            center = (center + shift) / [w, h]
+            shift = self.max_shift * rng.random(2) * np.array([self.width, self.height])
+            center = (kpts[rng.choice(len(kpts), p=p)] + shift) / [w, h]
             center = np.clip(center, 0, np.nextafter(1, 0))  # Clip to 1 exclusive
-        return {"h_start": center[1], "w_start": center[0]}
 
-    def apply_to_keypoints(
-        self,
-        keypoints,
-        **params,
-    ) -> list[tuple[float]]:
-        keypoints = super().apply_to_keypoints(keypoints, **params)
-        new_keypoints = []
-        for kp in keypoints:
-            x, y = kp[:2]
-            if not (0 <= x < self.width and 0 <= y < self.height):
-                kp = list(kp)
-                kp[:2] = np.nan, np.nan
-                kp = tuple(kp)
-            new_keypoints.append(kp)
-        return new_keypoints
+        crop_coords = fcrops.get_crop_coords((h, w), (self.height, self.width), float(center[1]), float(center[0]))
+        return {"crop_coords": crop_coords, "pad_params": None}
+
+    def apply_to_keypoints(self, keypoints: NDArray, crop_coords: tuple[int, int, int, int], **params) -> NDArray:
+        """Crop the keypoints, blanking (NaN) the ones that fall outside the window."""
+        # an array inside a Compose; a plain list of tuples when the transform is called directly
+        keypoints = np.asarray(keypoints, dtype=float)
+        keypoints = keypoints.reshape(len(keypoints), -1)
+        keypoints = np.array(super().apply_to_keypoints(keypoints, crop_coords, **params), dtype=float)
+        if keypoints.size:
+            x, y = keypoints[:, 0], keypoints[:, 1]
+            outside = ~((x >= 0) & (x < self.width) & (y >= 0) & (y < self.height))
+            keypoints[outside, :2] = np.nan
+        return keypoints
 
     def get_transform_init_args_names(self) -> tuple[str, ...]:
         return "width", "height", "max_shift", "crop_sampling"

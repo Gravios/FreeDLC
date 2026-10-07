@@ -45,6 +45,10 @@ IMAGES_DIRNAME = "images"
 TRAIN_JSON = "train.json"
 TEST_JSON = "test.json"
 
+#: Pixels added around an individual's labeled keypoints to form its bounding box
+#: (DeepLabCut's default ``bbox_margin``).
+BBOX_MARGIN = 20
+
 
 def workspace_to_dlc_project_dict(config) -> dict[str, Any]:
     """Map a workspace :class:`ProjectConfig` to the project dict that
@@ -66,6 +70,22 @@ def workspace_to_dlc_project_dict(config) -> dict[str, Any]:
     return d
 
 
+def _keypoints_bbox(points, image_w: int, image_h: int, margin: float = BBOX_MARGIN) -> list[float]:
+    """COCO ``[x, y, w, h]`` box around labeled ``points``, grown by ``margin`` pixels.
+
+    The margin keeps the box non-degenerate (the loader's augmentation rejects a box
+    of zero width or height, which bare keypoints produce whenever they line up),
+    and matches DeepLabCut's own keypoint boxes. Clipped to the image when its size
+    is known (non-zero).
+    """
+    xs, ys = [x for x, _ in points], [y for _, y in points]
+    x0, y0, x1, y1 = min(xs) - margin, min(ys) - margin, max(xs) + margin, max(ys) + margin
+    if image_w and image_h:
+        x0, y0 = min(max(x0, 0.0), image_w - 1.0), min(max(y0, 0.0), image_h - 1.0)
+        x1, y1 = max(min(x1, float(image_w)), x0 + 1.0), max(min(y1, float(image_h)), y0 + 1.0)
+    return [x0, y0, x1 - x0, y1 - y0]
+
+
 def labels_to_coco(labels_by_video, bodyparts, *, image_dims: dict | None = None) -> dict[str, Any]:
     """Convert per-video tidy label DataFrames to a single COCO dict.
 
@@ -73,12 +93,18 @@ def labels_to_coco(labels_by_video, bodyparts, *, image_dims: dict | None = None
         labels_by_video: ``{video_id: long DataFrame}`` with columns
             ``image, individual, bodypart, x, y``.
         bodyparts: ordered bodypart names; keypoints are emitted in this order.
-        image_dims: optional ``{file_name: (width, height)}``; defaults to 0x0
-            (the trainer computes ground-truth bboxes from keypoints regardless).
+        image_dims: optional ``{file_name: (width, height)}``; defaults to 0x0.
 
     Returns a COCO dict with ``images``, ``annotations`` and ``categories``.
     Keypoints use visibility ``2`` for labeled points and ``0`` (at 0,0) for
-    unlabeled ones, so fully-unlabeled individuals are dropped by the loader.
+    unlabeled ones. Each annotation carries the ``bbox`` (``[x, y, w, h]``) and
+    ``area`` of its labeled keypoints: DeepLabCut's ``COCOLoader`` discards any
+    annotation whose ``bbox`` is empty, so without one nothing reaches the trainer.
+
+    Only what was actually labeled is emitted. An individual with no labeled
+    keypoint gets no annotation, and an image left with no annotation is dropped:
+    a frame that was extracted but never labeled is not a "nothing here" example,
+    and training on it as one teaches the model to predict nothing.
     """
     import pandas as pd
 
@@ -91,23 +117,31 @@ def labels_to_coco(labels_by_video, bodyparts, *, image_dims: dict | None = None
         for image_name, img_df in df.groupby("image", sort=False):
             file_name = f"{video_id}/{image_name}"
             w, h = image_dims.get(file_name, (0, 0))
-            images.append({"id": img_id, "file_name": file_name, "width": w, "height": h})
+            image_annotations: list[dict] = []
             for _individual, ind_df in img_df.groupby("individual", sort=False):
                 coords = {row.bodypart: (row.x, row.y) for row in ind_df.itertuples()}
                 kpts: list[float] = []
-                n_labeled = 0
+                labeled: list[tuple[float, float]] = []
                 for bpt in bodyparts:
                     x, y = coords.get(bpt, (float("nan"), float("nan")))
                     if pd.isna(x) or pd.isna(y):
                         kpts += [0.0, 0.0, 0]
                     else:
                         kpts += [float(x), float(y), 2]
-                        n_labeled += 1
-                annotations.append({
+                        labeled.append((float(x), float(y)))
+                if not labeled:
+                    continue
+                x_min, y_min, width, height = _keypoints_bbox(labeled, w, h)
+                image_annotations.append({
                     "id": ann_id, "image_id": img_id, "category_id": 1,
-                    "keypoints": kpts, "num_keypoints": n_labeled, "bbox": [], "iscrowd": 0,
+                    "keypoints": kpts, "num_keypoints": len(labeled),
+                    "bbox": [x_min, y_min, width, height], "area": width * height, "iscrowd": 0,
                 })
                 ann_id += 1
+            if not image_annotations:
+                continue
+            images.append({"id": img_id, "file_name": file_name, "width": w, "height": h})
+            annotations.extend(image_annotations)
             img_id += 1
     categories = [{"id": 1, "name": "animal", "keypoints": list(bodyparts), "skeleton": []}]
     return {"images": images, "annotations": annotations, "categories": categories}
@@ -191,6 +225,11 @@ def export_coco_dataset(
     labels_by_video = {}
     for vid in video_ids:
         df = scale_labels(labels_provider(project, vid), project.labels_scale_to(vid, frames))
+        n_frames = df["image"].nunique()
+        df = df.dropna(subset=["x", "y"])  # frames with no labeled keypoint drop out here
+        if df["image"].nunique() < n_frames:
+            log.info("%s: %d extracted frame(s) carry no labels and are not trained on",
+                     vid, n_frames - df["image"].nunique())
         src_dir = project.layout.frames_dir(vid, frames or project.label_frames_kind(vid))
         names = list(dict.fromkeys(df["image"].tolist()))
         present = [name for name in names if (src_dir / name).is_file()]
