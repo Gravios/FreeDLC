@@ -18,24 +18,41 @@ in a corner, rearing, grooming -- so picking the n worst outright would take n
 nearly identical frames from one episode. Splitting by count rather than by time
 still gives a long bad episode more picks than a short one.
 
+:func:`pick_confident` does the same among the frames showing the most markers,
+keeping the most confident frame of each run. Those are frames the model already
+gets right -- or appears to: labeled with the model's own positions (see
+:func:`propose_labels`) they show where the confident predictions are off, and
+they widen the coverage of the labeled set at little cost.
+
 :func:`run_poses` finds a run's pose files and the video each was computed on, and
 :func:`video_id_for` maps that video back to a registered id. Frame numbers are
 shared by an original and its processed video, so a run on either serves.
+
+:func:`propose_labels` writes a run's predicted positions for new frames into the
+annotation file napari opens, in original pixels, so they come up as markers to
+adjust rather than to place. ``labels.parquet`` is not touched: the proposals
+become labels when annotate closes and ingests that file -- as they are left in it
+then, adjusted or not.
 """
 from __future__ import annotations
 
 import logging
 from pathlib import Path
 
+from .apply import SINGLE_INDIVIDUAL as SINGLE
 from .manifest import read_manifest
 
 __all__ = [
     "resolve_run",
     "run_poses",
+    "match_video",
     "video_id_for",
     "frame_stats",
     "pick_low_confidence",
+    "pick_confident",
     "run_pcutoff",
+    "video_size",
+    "propose_labels",
 ]
 
 log = logging.getLogger(__name__)
@@ -105,12 +122,13 @@ def run_poses(project, run) -> list[tuple[Path | None, Path]]:
     return sorted(pairs.values(), key=lambda pair: str(pair[1]))
 
 
-def video_id_for(project, video: Path) -> str | None:
-    """The registered id ``video`` is the original or processed video of, if any.
+def match_video(project, video: Path) -> tuple[str | None, str | None]:
+    """``(video_id, kind)`` of the registered video ``video`` is, if any.
 
     The file itself is looked for first (the media of either kind, or the source a
-    video was registered from); failing that, the name is matched as
-    ``videos --register`` matches it, which also finds a file of another size.
+    video was registered from), which also tells the kind. Failing that, the name
+    is matched as ``videos --register`` matches it -- which finds a file of another
+    size too, but not its kind (``None``).
     """
     target = video.resolve() if video.exists() else None
     if target is not None:
@@ -119,9 +137,14 @@ def video_id_for(project, video: Path) -> str | None:
                 sources = [m.resolve() for m in project.video_media_files(vid, kind)]
                 sources.append(Path(project.video_record(vid, kind).source_path).resolve())
                 if target in sources:
-                    return vid
+                    return vid, kind
     pairs, _ = project.match_originals([video])
-    return next(iter(pairs), None)
+    return next(iter(pairs), None), None
+
+
+def video_id_for(project, video: Path) -> str | None:
+    """The registered id ``video`` is the original or processed video of, if any."""
+    return match_video(project, video)[0]
 
 
 def frame_stats(df, pcutoff: float):
@@ -142,21 +165,140 @@ def frame_stats(df, pcutoff: float):
     })
 
 
+def _spread(frames, n: int, *, best_first) -> list[int]:
+    """Split ``frames`` (time-ordered) into ``n`` equal runs; keep the first of each by ``best_first``."""
+    import numpy as np
+
+    if len(frames) <= n:
+        return [int(f) for f in frames.index]
+    keys, ascending = zip(*best_first, strict=True)
+    picks = []
+    for chunk in np.array_split(np.arange(len(frames)), n):
+        part = frames.iloc[chunk].sort_values(list(keys), ascending=list(ascending), kind="stable")
+        picks.append(int(part.index[0]))
+    return sorted(picks)
+
+
 def pick_low_confidence(stats, n: int, *, max_shown: int, exclude=()) -> tuple[list[int], int]:
     """Choose up to ``n`` frames among those showing at most ``max_shown`` markers.
 
     Frames in ``exclude`` (those already extracted) are never chosen. Returns the
     chosen frame numbers, sorted, and how many frames qualified.
     """
-    import numpy as np
-
     low = stats[(stats["shown"] <= max_shown) & ~stats.index.isin(list(exclude))].sort_index()
     if n <= 0 or low.empty:
         return [], len(low)
-    if len(low) <= n:
-        return [int(f) for f in low.index], len(low)
-    picks = []
-    for chunk in np.array_split(np.arange(len(low)), n):
-        part = low.iloc[chunk].sort_values(["shown", "likelihood"], kind="stable")
-        picks.append(int(part.index[0]))
-    return sorted(picks), len(low)
+    return _spread(low, n, best_first=[("shown", True), ("likelihood", True)]), len(low)
+
+
+def pick_confident(stats, n: int, *, exclude=()) -> tuple[list[int], int]:
+    """Choose up to ``n`` frames among those showing the most markers any frame shows.
+
+    Within each run the frame with the highest mean likelihood is kept. Frames in
+    ``exclude`` are never chosen. Returns the chosen frame numbers, sorted, and how
+    many frames qualified.
+    """
+    free = stats[~stats.index.isin(list(exclude))]
+    if n <= 0 or free.empty:
+        return [], 0
+    top = free[free["shown"] == free["shown"].max()].sort_index()
+    return _spread(top, n, best_first=[("likelihood", False)]), len(top)
+
+
+def video_size(project, video_id: str, video: Path | None, kind: str | None) -> tuple[int, int] | None:
+    """``(width, height)`` of the video a run was computed on, if it can be told.
+
+    The file is probed when it is still there; otherwise the registered record of
+    ``kind`` (which kind of ``video_id`` the run's video was found to be) is used.
+    """
+    from .project import _probe_video
+
+    if video is not None and video.is_file():
+        width, height, _, _ = _probe_video(video)
+        if width and height:
+            return width, height
+    if kind is not None and project.has_video(video_id, kind):
+        rec = project.video_record(video_id, kind)
+        if rec.width and rec.height:
+            return rec.width, rec.height
+    return None
+
+
+def propose_labels(
+    project, video_id: str, poses, frames: dict[str, int], *, scale: tuple[float, float],
+    min_likelihood: float,
+) -> tuple[Path, int]:
+    """Put a run's predicted positions for ``frames`` into the annotation file napari opens.
+
+    ``frames`` maps a frame file name to its frame number in ``poses`` (a run's
+    long-form pose DataFrame). Positions are multiplied by ``scale`` -- run-video
+    pixels to original pixels, which the annotator shows -- and a marker below
+    ``min_likelihood`` is left unplaced. Frames that already hold a label are left
+    as they are.
+
+    The file is the staged ``CollectedData_<scorer>.h5`` annotate opens. When there
+    is none yet, it is started from ``labels.parquet`` so that existing labels are
+    kept; a file that is replaced is kept beside it as ``.bak``. Returns the file and
+    the number of markers placed.
+    """
+    import shutil
+
+    import numpy as np
+    import pandas as pd
+
+    from .annotate import _scorer
+    from .annotations import (
+        collected_data_to_long_df,
+        find_collected_data,
+        long_df_to_collected_data,
+        read_collected_data,
+    )
+
+    dataset_dir = project.layout.staging_dataset_dir(video_id)
+    dataset_dir.mkdir(parents=True, exist_ok=True)
+    existing = find_collected_data(dataset_dir)
+    if existing is not None:
+        labels = collected_data_to_long_df(read_collected_data(existing))
+        scorer = existing.stem[len("CollectedData_"):]
+    else:
+        scorer = _scorer(project)
+        labels = pd.DataFrame(columns=["image", "individual", "bodypart", "x", "y"])
+        parquet = project.layout.labels_parquet(video_id)
+        if parquet.is_file():
+            labels = pd.read_parquet(parquet)
+            sx, sy = project.labels_scale_to(video_id, "original")  # stored space -> what napari shows
+            labels = labels.assign(x=labels["x"] * sx, y=labels["y"] * sy)
+    labeled = set(labels.loc[labels["x"].notna() & labels["y"].notna(), "image"])
+
+    by_frame = {f: name for name, f in frames.items() if name not in labeled}
+    picked = poses[poses["frame"].isin(list(by_frame))].copy()
+    if project.config.multi_animal:  # model slots idv0, idv1, ... -> the project's individuals
+        slots = [i for i in dict.fromkeys(picked["individual"]) if i != SINGLE]
+        rename = dict(zip(slots, project.config.individuals, strict=False))
+        picked["individual"] = picked["individual"].map(lambda i: rename.get(i, i))
+    keep = picked["likelihood"] >= min_likelihood
+    picked.loc[~keep, ["x", "y"]] = np.nan
+    proposals = pd.DataFrame({
+        "image": picked["frame"].map(by_frame),
+        "individual": picked["individual"],
+        "bodypart": picked["bodypart"],
+        "x": picked["x"] * scale[0],
+        "y": picked["y"] * scale[1],
+    })
+    placed = int((proposals["x"].notna() & proposals["y"].notna()).sum())
+    # frames with nothing placed still go in, so napari lists them with the others
+    merged = pd.concat([labels[~labels["image"].isin(list(by_frame.values()))], proposals],
+                       ignore_index=True)
+    wide = long_df_to_collected_data(merged, project, scorer=scorer, dataset=video_id)
+
+    target = existing if existing is not None and existing.suffix == ".h5" else \
+        dataset_dir / f"CollectedData_{scorer}.h5"
+    if target.exists():
+        shutil.copy2(target, target.with_name(target.name + ".bak"))
+    partial = target.with_name(target.stem + ".part.h5")
+    wide.to_hdf(partial, key="df_with_missing", mode="w")
+    partial.replace(target)
+    csv = target.with_suffix(".csv")
+    if csv.exists():  # keep a CSV napari may have written in step with the h5
+        wide.to_csv(csv)
+    return target, placed

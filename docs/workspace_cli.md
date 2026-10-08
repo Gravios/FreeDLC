@@ -353,7 +353,7 @@ With `--project`, the poses go to an analyze run, `runs/analyze/<run_id>/<video>
 which `extract --from-run` reads (see the next section). The run records the
 `--pcutoff` its labeled videos were drawn with.
 
-## More frames where the model is unsure: `extract --from-run`
+## More frames from a model's own results: `extract --from-run`
 
 ```bash
 dlc-ws apply --project ws --model-id <model_id> reduced/*.mp4 --labeled-video
@@ -362,34 +362,60 @@ dlc-ws annotate session1 --project ws
 dlc-ws train ws
 ```
 
-`--from-run` reads the poses of an analyze run and adds, to each video's frame
-set, up to `-n` frames in which few or none of the markers would be drawn in the
-labeled video -- the frames the model handles worst. The run is named by its id,
-a unique start of it, `latest`, or its directory. Give a video to limit it to
-that one.
+`--from-run` reads the poses of an analyze run and adds up to `-n` frames to each
+video's frame set, with the model's marker positions already placed in them:
 
-A frame qualifies when at most `--max-shown` markers reach the pcutoff
-(default: a third of the markers, rounded down; 5 of 15). The pcutoff is the
-run's own unless `--pcutoff` is given. The picks are spread over the qualifying
-frames: they are split, in time order, into `-n` runs of equal length and the
-worst frame of each is taken (fewest markers drawn, then lowest mean
-likelihood). A long bad episode therefore gets more picks than a short one, but
-never `-n` neighbouring frames of it.
+- **unsure** frames, in which few or none of the markers would be drawn in the
+  labeled video -- what the model handles worst, and where the labeled set lacks
+  coverage;
+- **confident** frames, in which the most markers are drawn with the highest
+  likelihood -- where the model looks right. Checking those shows whether its
+  confident predictions really are accurate.
+
+`--best K` sets how many of the `-n` are confident (default: half, rounded down,
+so `-n 10` gives 5 of each and `-n 5` gives 2 confident, 3 unsure); `--best 0`
+adds unsure frames only. The run is named by its id, a unique start of it,
+`latest`, or its directory. Give a video to limit it to that one.
+
+A frame is unsure when at most `--max-shown` markers reach the pcutoff (default:
+a third of the markers, rounded down; 5 of 15), and confident when it shows as
+many markers as any frame does. The pcutoff is the run's own unless `--pcutoff`
+is given. The picks are spread over each group: its frames are split, in time
+order, into as many runs of equal length as there are picks, and the best of
+each run is taken -- for unsure frames the fewest markers drawn, then the lowest
+mean likelihood; for confident ones the highest mean likelihood. A long episode
+therefore gets more picks than a short one, but never neighbouring frames of it.
 
 The frames already extracted, and their labels, are kept; frames already in the
 set are not picked again. The new frames are read from the original video and,
 when one is registered, from the processed video, under the same names. A run
-on either video serves, since both have the same frame numbers. Each line of the
-report says how many frames qualified and how many markers the added ones show:
+on either video serves, since both have the same frame numbers.
+
+### The proposed markers
+
+The run's positions are written into the annotation file the annotator opens,
+`.annotate/<video>/labeled-data/<video>/CollectedData_<scorer>.h5`, scaled to
+original pixels, so they come up in napari as markers to move rather than to
+place. Only markers that reach the pcutoff -- those the labeled video draws --
+are placed; `--propose-all` places every marker, and `--no-propose` none.
+Existing labels in that file are kept (it is started from `labels.parquet` if
+there is none yet), and the previous file is kept beside it as `.bak`.
+
+`labels.parquet` is not changed. The proposals become labels when `annotate`
+closes and reads that file -- **as they are then, adjusted or not**. Move the
+markers that are wrong and delete those you cannot place before you close it;
+a proposal left untouched is trained on as if you had placed it.
 
 ```text
-run 20261008-094012-3fa2c1: frames showing at most 5 of 15 marker(s) at pcutoff 0.6; up to 10 new frame(s) per video
-session1: 1312 of 108012 frame(s) qualify; added 10, showing 0-4 marker(s) -> ws/sources/annotations/session1/frames/original
+run 20261008-094012-3fa2c1, pcutoff 0.6: per video, up to 5 frame(s) showing at most 5 of 15 marker(s) and 5 showing the most
+session1: added 5 unsure (of 1312, showing 0-4) and 5 confident (of 80211, showing 15) -> ws/sources/annotations/session1/frames/original
+  proposed 87 marker(s) for adjusting -> ws/.annotate/session1/labeled-data/session1/CollectedData_gravio.h5
 ```
 
 Every individual's markers count towards the total, so in a multi-animal
-project a frame in which one animal is seen well does not qualify even if
-another is missed.
+project a frame in which one animal is seen well is not unsure even if another
+is missed. Proposed positions go to the project's individuals in the order the
+model numbers them.
 
 ## Use cases
 

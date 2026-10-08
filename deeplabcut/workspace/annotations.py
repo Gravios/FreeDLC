@@ -30,6 +30,7 @@ from .util import materialize
 __all__ = [
     "read_collected_data",
     "collected_data_to_long_df",
+    "long_df_to_collected_data",
     "write_labels_parquet",
     "copy_frames",
     "find_collected_data",
@@ -115,6 +116,45 @@ def collected_data_to_long_df(df):
     if not parts:
         return pd.DataFrame(columns=["image", "individual", "bodypart", "x", "y"])
     return pd.concat(parts, ignore_index=True)[["image", "individual", "bodypart", "x", "y"]]
+
+
+def long_df_to_collected_data(long, project, *, scorer: str, dataset: str):
+    """The wide ``CollectedData`` DataFrame napari opens, from long-form labels.
+
+    The inverse of :func:`collected_data_to_long_df`. Columns follow the project's
+    markers -- ``scorer/bodyparts/coords``, or ``scorer/individuals/bodyparts/coords``
+    for a multi-animal project, whose unique bodyparts sit under the ``single``
+    individual -- and the index is DLC's ``("labeled-data", dataset, image)``. Images
+    come in sorted order; a marker without a position is NaN.
+    """
+    import numpy as np
+    import pandas as pd
+
+    cfg = project.config
+    if cfg.multi_animal:
+        slots = [(ind, bp) for ind in cfg.individuals for bp in cfg.bodyparts]
+        slots += [(SINGLE_INDIVIDUAL, bp) for bp in cfg.unique_bodyparts]
+        columns = pd.MultiIndex.from_tuples(
+            [(scorer, ind, bp, c) for ind, bp in slots for c in ("x", "y")],
+            names=["scorer", "individuals", "bodyparts", "coords"],
+        )
+    else:
+        slots = [(SINGLE_INDIVIDUAL, bp) for bp in [*cfg.bodyparts, *cfg.unique_bodyparts]]
+        columns = pd.MultiIndex.from_tuples(
+            [(scorer, bp, c) for _, bp in slots for c in ("x", "y")],
+            names=["scorer", "bodyparts", "coords"],
+        )
+    images = sorted(dict.fromkeys(long["image"].tolist()))
+    row = {name: i for i, name in enumerate(images)}
+    col = {slot: 2 * i for i, slot in enumerate(slots)}
+    values = np.full((len(images), len(columns)), np.nan)
+    for image, individual, bodypart, x, y in long[["image", "individual", "bodypart", "x", "y"]].itertuples(
+            index=False):
+        key = (individual if cfg.multi_animal else SINGLE_INDIVIDUAL, bodypart)
+        if key in col:
+            values[row[image], col[key]:col[key] + 2] = (x, y)
+    index = pd.MultiIndex.from_tuples([("labeled-data", dataset, name) for name in images])
+    return pd.DataFrame(values, index=index, columns=columns)
 
 
 def write_labels_parquet(df, path: str | Path) -> Path:

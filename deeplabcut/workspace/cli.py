@@ -200,17 +200,34 @@ def _extract_one(args_tuple):
         return (video_id, None, str(err))
 
 
+def _picked(stats, label: str, frames, qualify: int) -> str:
+    """``"3 unsure (of 120, showing 0-2)"``: how many frames were added, of how many, showing what."""
+    if not frames:
+        return f"0 {label} (of {qualify})"
+    counts = stats.loc[list(frames), "shown"]
+    low, high = counts.min(), counts.max()
+    return f"{len(frames)} {label} (of {qualify}, showing {low if low == high else f'{low}-{high}'})"
+
+
 def _extract_from_run(args) -> int:
-    """Add the frames an analyze run's model was least sure of to their videos' frame sets."""
+    """Add frames an analyze run's model was least and most sure of, with its positions proposed."""
     import pandas as pd
 
     from . import refine
     from .annotate import resolve_video_id
-    from .frames import add_frames, extracted_indices, frame_index
+    from .frames import add_frames, extracted_indices, frame_index, resolve_media
+    from .project import _probe_video
 
     if args.overwrite or args.match_original:
         print("--from-run adds frames to the existing sets; it cannot be combined with "
               "--overwrite or --match-original")
+        return 2
+    n_best = args.best if args.best is not None else args.n // 2
+    if not 0 <= n_best <= args.n:
+        print(f"--best must be between 0 and -n ({args.n}), got {n_best}")
+        return 2
+    if args.no_propose and args.propose_all:
+        print("give --no-propose or --propose-all, not both")
         return 2
     try:
         project = _open_project(args.project)
@@ -227,12 +244,13 @@ def _extract_from_run(args) -> int:
     pcutoff = args.pcutoff if args.pcutoff is not None else refine.run_pcutoff(run)
     n_markers = len(project.config.bodyparts) + len(project.config.unique_bodyparts)
     max_shown = args.max_shown if args.max_shown is not None else n_markers // 3
-    print(f"run {run.run_id}: frames showing at most {max_shown} of {n_markers} marker(s) "
-          f"at pcutoff {pcutoff:g}; up to {args.n} new frame(s) per video")
+    n_low = args.n - n_best
+    print(f"run {run.run_id}, pcutoff {pcutoff:g}: per video, up to {n_low} frame(s) showing at most "
+          f"{max_shown} of {n_markers} marker(s) and {n_best} showing the most")
 
     added, failures, matched, touched = 0, 0, set(), []
     for video, pose in poses:
-        vid = refine.video_id_for(project, video) if video is not None else None
+        vid, kind = refine.match_video(project, video) if video is not None else (None, None)
         if vid is None:
             if only is None:  # with a video given, the others do not matter
                 print(f"{video or pose}: no registered video matches; skipped")
@@ -241,24 +259,47 @@ def _extract_from_run(args) -> int:
         matched.add(vid)
         if only is not None and vid != only:
             continue
-        stats = refine.frame_stats(pd.read_parquet(pose), pcutoff)
-        picks, n_low = refine.pick_low_confidence(
-            stats, args.n, max_shown=max_shown, exclude=extracted_indices(project, vid))
+        df = pd.read_parquet(pose)
+        stats = refine.frame_stats(df, pcutoff)
+        have = extracted_indices(project, vid)
+        low, n_qualify = refine.pick_low_confidence(stats, n_low, max_shown=max_shown, exclude=have)
+        best, n_top = refine.pick_confident(stats, n_best, exclude=have | set(low))
         try:
-            written = add_frames(project, vid, picks)
+            written = add_frames(project, vid, low + best)
         except (FileNotFoundError, ValueError, OSError) as err:
             print(f"{vid}: {err}")
             failures += 1
             continue
-        detail = ""
-        if written:
-            shown_counts = stats.loc[[frame_index(p.name) for p in written], "shown"]
-            low, high = shown_counts.min(), shown_counts.max()
-            detail = f", showing {low if low == high else f'{low}-{high}'} marker(s)"
-            touched.append(vid)
-        print(f"{vid}: {n_low} of {len(stats)} frame(s) qualify; added {len(written)}{detail} "
-              f"-> {project.layout.frames_dir(vid, 'original')}")
+        names = {p.name: frame_index(p.name) for p in written}
+        got_low = [f for f in names.values() if f in set(low)]
+        got_best = [f for f in names.values() if f not in set(low)]
+        print(f"{vid}: added {_picked(stats, 'unsure', got_low, n_qualify)} and "
+              f"{_picked(stats, 'confident', got_best, n_top)} -> {project.layout.frames_dir(vid, 'original')}")
         added += len(written)
+        if written:
+            touched.append(vid)
+        if not written or args.no_propose:
+            continue
+
+        size = refine.video_size(project, vid, video, kind)
+        rec = project.video_record(vid, "original")
+        original = (rec.width, rec.height) if rec.width and rec.height else None
+        if original is None:
+            with contextlib.suppress(FileNotFoundError):
+                width, height, _, _ = _probe_video(resolve_media(project, vid, "original"))
+                original = (width, height) if width and height else None
+        if size is None or original is None:
+            print(f"  the size of {video} or of the original is unknown; no markers proposed")
+            continue
+        scale = (original[0] / size[0], original[1] / size[1])
+        try:
+            target, placed = refine.propose_labels(
+                project, vid, df, names, scale=scale, min_likelihood=0.0 if args.propose_all else pcutoff)
+        except (ValueError, OSError, ImportError) as err:  # ImportError: no pytables for the .h5
+            print(f"  no markers proposed: {err}")
+            failures += 1
+            continue
+        print(f"  proposed {placed} marker(s) for adjusting -> {target}")
 
     if only is not None and only not in matched:
         print(f"run {run.run_id} has no poses for {only}")
@@ -266,6 +307,9 @@ def _extract_from_run(args) -> int:
     print(f"done: {added} frame(s) added to {len(touched)} video(s)")
     if touched:
         print(f"label them with `dlc-ws annotate <video> --project {args.project}` (e.g. {touched[0]})")
+        if not args.no_propose:
+            print("proposed markers become labels as they are when annotate closes: "
+                  "move the wrong ones, delete those you cannot place")
     return 2 if failures else 0
 
 
@@ -278,8 +322,9 @@ def cmd_extract(args) -> int:
             print("give a video or --all, not both")
             return 2
         return _extract_from_run(args)
-    if args.max_shown is not None or args.pcutoff is not None:
-        print("--max-shown and --pcutoff only apply with --from-run")
+    if (args.max_shown is not None or args.pcutoff is not None or args.best is not None
+            or args.no_propose or args.propose_all):
+        print("--max-shown, --pcutoff, --best, --no-propose and --propose-all only apply with --from-run")
         return 2
     if args.all and args.video:
         print("give a video or --all, not both")
@@ -854,8 +899,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help="re-read the processed frames from the processed video registered now, at the "
                         "frames already extracted from the original (keeps the selection and the labels)")
     p.add_argument("--from-run", dest="from_run", metavar="RUN",
-                   help="add the frames an analyze run (id, unique prefix, 'latest' or directory) was least "
-                        "sure of: -n per video, among frames showing at most --max-shown markers")
+                   help="add -n frames per video from an analyze run (id, unique prefix, 'latest' or "
+                        "directory): --best of the frames it was surest of, the rest from those showing at "
+                        "most --max-shown markers; its positions are proposed in the annotation file")
+    p.add_argument("--best", type=int, default=None, metavar="K",
+                   help="with --from-run: how many of the -n are confident frames (default: half, rounded down)")
+    p.add_argument("--no-propose", action="store_true", dest="no_propose",
+                   help="with --from-run: add the frames without the run's marker positions")
+    p.add_argument("--propose-all", action="store_true", dest="propose_all",
+                   help="with --from-run: propose every marker, not only those reaching pcutoff")
     p.add_argument("--max-shown", type=int, default=None, dest="max_shown", metavar="K",
                    help="with --from-run: a frame qualifies when at most K markers reach pcutoff "
                         "(default: a third of the markers)")

@@ -709,7 +709,7 @@ def _analyze_run(proj, video: Path, likelihood, *, pcutoff=0.6, bodyparts=BODYPA
     run = proj.new_run("analyze", params={"pcutoff": pcutoff})
     out = run.dir / "clip-01"
     out.mkdir(parents=True)
-    rows = [(f, "animal", bp, 1.0, 2.0, float(lk)) for f, lks in enumerate(likelihood)
+    rows = [(f, "animal", bp, 10.0 + f, 5.0, float(lk)) for f, lks in enumerate(likelihood)
             for bp, lk in zip(bodyparts, lks, strict=True)]
     pd.DataFrame(rows, columns=["frame", "individual", "bodypart", "x", "y", "likelihood"]).to_parquet(
         out / "pose.parquet")
@@ -784,12 +784,14 @@ def test_extract_from_run_adds_low_confidence_frames_to_both_sets():
         _analyze_run(proj, processed, likelihood)    # run on the processed video
         ws_root = str(d / "ws")
 
-        code, out = _run(["extract", "--from-run", "latest", "--project", ws_root, "-n", "3"])
+        code, out = _run(["extract", "--from-run", "latest", "--project", ws_root, "-n", "3",
+                          "--best", "0", "--no-propose"])
         assert code == 0, out
-        assert "at most 0 of 2 marker(s) at pcutoff 0.6" in out       # default: a third of the markers
+        assert "pcutoff 0.6: per video, up to 3 frame(s) showing at most 0 of 2" in out   # a third of 2
         added = frames_mod.extracted_indices(proj, vid) - have
         assert len(added) == 3 and all(10 <= f < 20 for f in added), added
-        assert f"{vid}: {10 - len(have & set(range(10, 20)))} of 40 frame(s) qualify; added 3" in out
+        assert f"{vid}: added 3 unsure (of {10 - len(have & set(range(10, 20)))}, showing 0)" in out
+        assert not proj.layout.staging_dataset_dir(vid).exists()               # --no-propose
         orig_dir, proc_dir = (proj.layout.frames_dir(vid, k) for k in ("original", "processed"))
         assert sorted(p.name for p in proc_dir.glob("*.png")) == sorted(p.name for p in orig_dir.glob("*.png"))
         assert _frame_sizes(proc_dir) == {(80, 60)} and _frame_sizes(orig_dir) == {(160, 120)}
@@ -797,11 +799,11 @@ def test_extract_from_run_adds_low_confidence_frames_to_both_sets():
 
         # again: different frames, and --max-shown widens what qualifies
         code, out = _run(["extract", vid, "--from-run", "latest", "--project", ws_root,
-                          "-n", "20", "--max-shown", "1"])
+                          "-n", "20", "--max-shown", "1", "--best", "0", "--no-propose"])
         assert code == 0, out
         low = set(range(10, 20)) | set(range(30, 34))
         assert frames_mod.extracted_indices(proj, vid) == have | low           # every one, nothing else
-        assert f"added {len(low - have - added)}, showing 0-1 marker(s)" in out
+        assert f"added {len(low - have - added)} unsure (of {len(low - have - added)}, showing 0-1)" in out
 
 
 def test_extract_from_run_reports_what_it_cannot_use():
@@ -822,6 +824,9 @@ def test_extract_from_run_reports_what_it_cannot_use():
             assert code == 2 and "cannot be combined" in out
         code, out = _run(["extract", vid, "--project", ws_root, "--pcutoff", "0.5"])
         assert code == 2 and "only apply with --from-run" in out
+        for extra in (["--best", "4", "-n", "3"], ["--no-propose", "--propose-all"]):
+            code, out = _run(["extract", "--from-run", "latest", "--project", ws_root, *extra])
+            assert code == 2 and ("--best must be between 0 and -n (3)" in out or "not both" in out), out
 
 
 def test_add_frames_skips_existing_and_out_of_range_indices():
@@ -832,6 +837,100 @@ def test_add_frames_skips_existing_and_out_of_range_indices():
         written = frames_mod.add_frames(proj, vid, [*existing, 5, 5, 39, 40, 999])
         assert [frames_mod.frame_index(p.name) for p in written] == [5, 39]
         assert len(first[0].name) == len(written[0].name)                    # same zero padding
+
+
+def test_pick_confident_takes_the_surest_frame_of_each_run():
+    from deeplabcut.workspace import refine
+
+    shown = np.full(100, 15)
+    shown[40:60] = 14                                  # not every marker: never "confident"
+    lk = np.full(100, 0.8)
+    lk[[7, 31, 77]] = 0.99
+    stats = pd.DataFrame({"shown": shown, "likelihood": lk})
+    picks, n_top = refine.pick_confident(stats, 3)
+    assert n_top == 80 and picks == [7, 31, 77]
+    picks, _ = refine.pick_confident(stats, 3, exclude=[7])
+    assert 7 not in picks and len(picks) == 3
+    assert refine.pick_confident(stats, 0) == ([], 0)
+
+
+def test_collected_data_round_trips_through_long_form():
+    from deeplabcut.workspace.annotations import collected_data_to_long_df, long_df_to_collected_data
+
+    with tempfile.TemporaryDirectory() as d:
+        proj = Project.create(Path(d) / "ws", task="reach", bodyparts=BODYPARTS)
+        long = pd.DataFrame({"image": ["img2.png", "img2.png", "img1.png"], "individual": "single",
+                             "bodypart": ["snout", "paw", "snout"], "x": [1.0, 2.0, np.nan],
+                             "y": [3.0, 4.0, np.nan]})
+        wide = long_df_to_collected_data(long, proj, scorer="me", dataset="clip")
+        assert list(wide.columns.names) == ["scorer", "bodyparts", "coords"]
+        assert wide.index.tolist() == [("labeled-data", "clip", "img1.png"), ("labeled-data", "clip", "img2.png")]
+        back = collected_data_to_long_df(wide).set_index(["image", "bodypart"])
+        assert back.loc[("img2.png", "paw"), "x"] == 2.0 and np.isnan(back.loc[("img1.png", "paw"), "x"])
+
+        multi = Project.create(Path(d) / "ma", task="reach", bodyparts=BODYPARTS, multi_animal=True,
+                               individuals=["m1", "m2"], unique_bodyparts=["led"])
+        long = pd.DataFrame({"image": "img1.png", "individual": ["m2", "single"], "bodypart": ["paw", "led"],
+                             "x": [5.0, 6.0], "y": [7.0, 8.0]})
+        wide = long_df_to_collected_data(long, multi, scorer="me", dataset="clip")
+        assert list(wide.columns.names) == ["scorer", "individuals", "bodyparts", "coords"]
+        assert wide[("me", "m2", "paw", "x")].iloc[0] == 5.0 and wide[("me", "single", "led", "y")].iloc[0] == 8.0
+
+
+def test_extract_from_run_proposes_the_runs_positions_for_adjusting():
+    from deeplabcut.workspace.annotations import (
+        collected_data_to_long_df,
+        find_collected_data,
+        read_collected_data,
+        write_labels_parquet,
+    )
+    from deeplabcut.workspace.manifest import write_manifest
+    from deeplabcut.workspace.schema import LabelsRecord
+
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        proj, vid = _project_with_pair(d, orig=(160, 120), proc=(80, 60))
+        frames_mod.extract_frames(proj, vid, n=4)                           # 5, 15, 25, 35
+        labeled = pd.DataFrame({"image": "img0005.png", "individual": "single", "bodypart": BODYPARTS,
+                                "x": [11.0, 12.0], "y": [13.0, 14.0]})
+        write_labels_parquet(labeled, proj.layout.labels_parquet(vid))      # labels from an earlier session
+        write_manifest(proj.layout.labels_toml(vid), LabelsRecord(video_id=vid, space="original").to_dict())
+        likelihood = [(0.9, 0.9)] * 40
+        likelihood[10:20] = [(0.7, 0.1)] * 10                              # one marker drawn
+        likelihood[12] = (0.65, 0.05)                                       # ...and the least sure
+        likelihood[27] = (0.99, 0.98)                                       # the surest frame
+        _analyze_run(proj, proj.video_media_files(vid, "processed")[0], likelihood)   # 80x60 px
+        ws_root = str(d / "ws")
+
+        code, out = _run(["extract", "--from-run", "latest", "--project", ws_root, "-n", "2", "--max-shown", "1"])
+        assert code == 0, out
+        # 15 is already extracted, so 9 frames qualify as unsure; 5, 25, 35 likewise leave 27 confident
+        assert f"{vid}: added 1 unsure (of 9, showing 1) and 1 confident (of 27, showing 2)" in out
+        staged = find_collected_data(proj.layout.staging_dataset_dir(vid))
+        assert staged is not None and "proposed 3 marker(s) for adjusting" in out
+        long = collected_data_to_long_df(read_collected_data(staged)).set_index(["image", "bodypart"])
+        assert long.loc[("img0005.png", "snout"), "x"] == 11.0              # earlier labels kept
+        assert long.loc[("img0027.png", "snout"), "x"] == (10 + 27) * 2     # processed -> original px
+        assert long.loc[("img0027.png", "paw"), "y"] == 10.0
+        assert long.loc[("img0012.png", "snout"), "x"] == (10 + 12) * 2
+        assert np.isnan(long.loc[("img0012.png", "paw"), "x"])              # below pcutoff: not placed
+        assert pd.read_parquet(proj.layout.labels_parquet(vid)).equals(labeled)   # not labels yet
+
+        # a second pass keeps the first one's file, and --propose-all places everything
+        code, out = _run(["extract", "--from-run", "latest", "--project", ws_root, "-n", "2",
+                          "--max-shown", "1", "--propose-all"])
+        assert code == 0, out
+        assert staged.with_name(staged.name + ".bak").is_file()
+        long = collected_data_to_long_df(read_collected_data(staged)).set_index(["image", "bodypart"])
+        assert np.isnan(long.loc[("img0012.png", "paw"), "x"])              # first pass left as it was
+        new = sorted(set(long.index.get_level_values("image")) - {"img0005.png", "img0012.png", "img0027.png"})
+        assert len(new) == 2 and not long.loc[new, "x"].isna().any()
+
+        # closing the annotator takes the proposals as they are
+        ann.annotate_video(proj, vid, _launch=lambda config, dataset: None)
+        labels = pd.read_parquet(proj.layout.labels_parquet(vid))
+        assert {"img0005.png", "img0012.png", "img0027.png", *new} == set(labels["image"])
+        assert proj.labels_record(vid).space == "original"
 
 
 if __name__ == "__main__":
