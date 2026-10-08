@@ -91,9 +91,16 @@ def resolve_video_id(project, video: str) -> str:
 
 
 def synthesize_config(project, *, scorer: str) -> dict:
-    """Build the legacy ``config.yaml`` dict napari needs from the project's manifest."""
+    """Build the legacy ``config.yaml`` dict napari needs from the project's manifest.
+
+    The ``[display]`` table sets ``dotsize`` and ``colormap``, and adds the
+    ``bodypart_colors``/``bodypart_sizes`` napari-freedlc reads for markers with a
+    style of their own.
+    """
+    from .display import annotator_config
+
     cfg = project.config
-    return {
+    config = {
         "Task": cfg.task,
         "scorer": scorer,
         "multianimalproject": bool(cfg.multi_animal),
@@ -106,6 +113,8 @@ def synthesize_config(project, *, scorer: str) -> dict:
         "pcutoff": DEFAULT_PCUTOFF,
         "colormap": DEFAULT_COLORMAP,
     }
+    config.update(annotator_config(cfg.style))
+    return config
 
 
 def _scorer(project) -> str:

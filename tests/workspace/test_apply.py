@@ -232,7 +232,7 @@ def test_apply_labeled_video_wiring(monkeypatch):
         _patch_inference(monkeypatch)
         calls = []
 
-        def fake_render(video, df, out_path, bundle, skeleton, pcutoff):
+        def fake_render(video, df, out_path, bundle, skeleton, pcutoff, display=None):
             calls.append((Path(video).name, Path(out_path).name,
                           tuple(tuple(e) for e in (skeleton or [])), pcutoff))
             Path(out_path).write_bytes(b"mp4")

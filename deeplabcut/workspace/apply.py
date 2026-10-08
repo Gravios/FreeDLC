@@ -170,17 +170,27 @@ def read_fdlc_sidecar(path: str | Path) -> tuple[list[str] | None, list[list[str
     return (meta.get("bodyparts") or None), [list(e) for e in meta.get("skeleton", [])]
 
 
-def _render_labeled(video, df, out_path, bundle, skeleton, pcutoff) -> Path:
+def read_fdlc_display(path: str | Path) -> dict:
+    """The ``[display]`` table a ``.fdlc.toml`` sidecar carries (empty if none)."""
+    from .manifest import read_manifest
+
+    return dict(read_manifest(path).get("display") or {})
+
+
+def _render_labeled(video, df, out_path, bundle, skeleton, pcutoff, display=None) -> Path:
+    from .display import parse_display, video_style
     from .label_video import render_labeled_video  # lazy: pulls cv2
 
+    style = video_style(parse_display(display), list(bundle.card.bodyparts)) if display else {}
     return render_labeled_video(
         video, df, out_path,
-        bodyparts=bundle.card.bodyparts, skeleton=skeleton, pcutoff=pcutoff,
+        bodyparts=bundle.card.bodyparts, skeleton=skeleton, pcutoff=pcutoff, **style,
     )
 
 
-def _write_fdlc_sidecar(video, pose_path, bundle, *, skeleton, params, snapshot, started) -> Path:
-    """Write the ``<stem>.fdlc.toml`` sidecar: provenance + bodyparts + skeleton edges."""
+def _write_fdlc_sidecar(video, pose_path, bundle, *, skeleton, params, snapshot, started,
+                        display=None) -> Path:
+    """Write the ``<stem>.fdlc.toml`` sidecar: provenance + bodyparts + skeleton edges (+ display)."""
     video = Path(video)
     card = bundle.card
     data = {
@@ -197,6 +207,8 @@ def _write_fdlc_sidecar(video, pose_path, bundle, *, skeleton, params, snapshot,
         "params": dict(params),
         "code_version": code_version(),
     }
+    if display:  # so `fdlc label` draws it the same way later
+        data["display"] = dict(display)
     return write_manifest(fdlc_sidecar_path(video), data)
 
 
@@ -311,6 +323,7 @@ def apply_to_video(
     labeled_video: bool = False,
     pcutoff: float = 0.6,
     runners=None,
+    display=None,
 ):
     """Run a :class:`ModelBundle` on one video, writing ``pose.parquet`` + ``run.toml``.
 
@@ -321,8 +334,9 @@ def apply_to_video(
     together with a ``<video-stem>.fdlc.toml`` sidecar (provenance, bodyparts, and
     ``skeleton`` edges), and no run directory is created. With
     ``labeled_video=True`` an annotated ``.fdlc.mp4`` (beside) / ``labeled.mp4``
-    (run dir) is also rendered. Pass ``runners`` (from :func:`apply_to_videos`)
-    to reuse a runner already built for this bundle.
+    (run dir) is also rendered, styled by ``display`` (a project's ``[display]``
+    table) when given. Pass ``runners`` (from :func:`apply_to_videos`) to reuse a
+    runner already built for this bundle.
     """
     started = now_iso()
     if runners is None:
@@ -341,12 +355,12 @@ def apply_to_video(
         sidecar = _write_fdlc_sidecar(
             video, pose_path, bundle, skeleton=skeleton,
             params={"batch_size": batch_size, "device": device, "cropping": cropping},
-            snapshot=snapshot, started=started,
+            snapshot=snapshot, started=started, display=display,
         )
         files_log.info("  pose     %s (%d frame(s))", shown(pose_path), df["frame"].nunique() if len(df) else 0)
         files_log.info("  sidecar  %s", shown(sidecar))
         if labeled_video:
-            _render_labeled(video, df, labeled_video_path(video), bundle, skeleton, pcutoff)
+            _render_labeled(video, df, labeled_video_path(video), bundle, skeleton, pcutoff, display)
             files_log.info("  labeled  %s", shown(labeled_video_path(video)))
         return pose_path
     pose_path = _write_video_outputs(
@@ -357,7 +371,7 @@ def apply_to_video(
     files_log.info("  pose     %s (%d frame(s))", shown(pose_path), df["frame"].nunique() if len(df) else 0)
     files_log.info("  record   %s", shown(Path(out_dir) / "run.toml"))
     if labeled_video:
-        _render_labeled(video, df, Path(out_dir) / "labeled.mp4", bundle, skeleton, pcutoff)
+        _render_labeled(video, df, Path(out_dir) / "labeled.mp4", bundle, skeleton, pcutoff, display)
         files_log.info("  labeled  %s", shown(Path(out_dir) / "labeled.mp4"))
     return pose_path
 
@@ -378,6 +392,7 @@ def apply_to_videos(
     labeled_video: bool = False,
     pcutoff: float = 0.6,
     on_error: str = "raise",
+    display=None,
 ) -> dict[str, Path | None]:
     """Label several videos with one bundle, building the runner **once**.
 
@@ -404,7 +419,7 @@ def apply_to_videos(
                 snapshot=snapshot, detector_snapshot=detector_snapshot,
                 device=device, batch_size=batch_size, cropping=cropping,
                 beside_video=beside_video, skeleton=skeleton,
-                labeled_video=labeled_video, pcutoff=pcutoff, runners=runners,
+                labeled_video=labeled_video, pcutoff=pcutoff, runners=runners, display=display,
             )
         except Exception:
             if on_error != "skip":

@@ -6,6 +6,8 @@
 Draws each bodypart as a colored dot (one color per bodypart) and, when a
 skeleton is given, connects the configured bodypart pairs -- each drawn only when
 its likelihood meets ``pcutoff``. Multi-animal frames draw every individual.
+Colors, dot sizes and line colors/widths default to a hue wheel, ``dotsize`` and
+white lines, and can be set per marker and per edge (see :mod:`.display`).
 
 Uses cv2 + numpy only (both already required), so it stays decoupled from the
 legacy ``make_labeled_video`` path and the wide DLC format. cv2/numpy are
@@ -54,12 +56,22 @@ def render_labeled_video(
     dotsize: int = 5,
     line_thickness: int = 1,
     progress: bool = True,
+    marker_colors: dict[str, tuple[int, int, int]] | None = None,
+    marker_radii: dict[str, int] | None = None,
+    line_color: tuple[int, int, int] = (255, 255, 255),
+    edge_colors: dict[frozenset, tuple[int, int, int]] | None = None,
+    edge_widths: dict[frozenset, int] | None = None,
 ) -> Path:
     """Write an annotated copy of ``video`` to ``out_path``; return that path.
 
     Requires cv2 at call time. Keypoints and skeleton edges below ``pcutoff`` (or
     with non-finite coordinates) are skipped. A tqdm progress bar over the frames
     is shown unless ``progress=False``.
+
+    ``dotsize`` is the dot radius and ``line_thickness`` the line width, in pixels.
+    ``marker_colors`` (BGR) and ``marker_radii`` override them per bodypart, and
+    ``edge_colors`` (BGR) and ``edge_widths`` per skeleton edge, keyed by
+    ``frozenset({a, b})``; ``line_color`` is the color of the other edges.
     """
     import math
 
@@ -68,8 +80,10 @@ def render_labeled_video(
 
     video, out_path = Path(video), Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    colors = _bodypart_colors(list(bodyparts))
-    edges = [(a, b) for a, b in (skeleton or [])]
+    colors = {**_bodypart_colors(list(bodyparts)), **(marker_colors or {})}
+    radii = marker_radii or {}
+    edges = [(a, b, (edge_colors or {}).get(frozenset((a, b)), line_color),
+              (edge_widths or {}).get(frozenset((a, b)), line_thickness)) for a, b in (skeleton or [])]
     lookup = _index_by_frame(df)
 
     cap = cv2.VideoCapture(str(video))
@@ -95,15 +109,14 @@ def render_labeled_video(
             if not ok:
                 break
             for kp in lookup.get(idx, {}).values():
-                for a, b in edges:                      # skeleton under the dots
+                for a, b, color, width in edges:        # skeleton under the dots
                     pa, pb = kp.get(a), kp.get(b)
                     if _ok(pa) and _ok(pb):
-                        cv2.line(frame, (int(pa[0]), int(pa[1])), (int(pb[0]), int(pb[1])),
-                                 (255, 255, 255), line_thickness)
+                        cv2.line(frame, (int(pa[0]), int(pa[1])), (int(pb[0]), int(pb[1])), color, width)
                 for bp, pt in kp.items():
                     if _ok(pt):
                         cv2.circle(frame, (int(round(pt[0])), int(round(pt[1]))),
-                                   dotsize, colors.get(bp, (0, 0, 255)), -1)
+                                   radii.get(bp, dotsize), colors.get(bp, (0, 0, 255)), -1)
             writer.write(frame)
             idx += 1
             bar.update(1)
@@ -122,18 +135,24 @@ def render_labeled_from_parquet(
     bodyparts: Sequence[str] | None = None,
     skeleton: Sequence[Sequence[str]] | None = None,
     pcutoff: float = 0.6,
+    display=None,
     **kwargs,
 ) -> Path:
     """Render an annotated video from an already-written pose parquet.
 
     ``bodyparts`` defaults to the distinct bodyparts in the parquet (in order of
-    first appearance) when not supplied.
+    first appearance) when not supplied. ``display`` is a project's ``[display]``
+    table; keyword arguments given explicitly take precedence over it.
     """
     import pandas as pd
+
+    from .display import parse_display, video_style
 
     df = pd.read_parquet(parquet)
     if bodyparts is None:
         bodyparts = list(dict.fromkeys(df["bodypart"]))
+    if display:
+        kwargs = {**video_style(parse_display(display), list(bodyparts)), **kwargs}
     return render_labeled_video(
         video, df, out_path, bodyparts=bodyparts, skeleton=skeleton, pcutoff=pcutoff, **kwargs,
     )

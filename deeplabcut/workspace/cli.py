@@ -30,6 +30,7 @@ from .apply import (
     beside_video_path,
     collect_videos,
     labeled_video_path,
+    read_fdlc_display,
     read_fdlc_sidecar,
     sidecar_for_parquet,
 )
@@ -176,8 +177,11 @@ def cmd_export_skeleton(args) -> int:
     return 0
 
 
-class NotFound(FileNotFoundError):
-    """A project or model named on the command line (or implied by the cwd) does not exist."""
+class CommandError(Exception):
+    """A project or model named on the command line (or implied by the cwd) cannot be used.
+
+    It does not exist, or its project.toml is invalid. ``main`` prints the message.
+    """
 
 
 #: help text of every project argument that may be left out
@@ -200,8 +204,8 @@ def _open_project(project_arg: str | None):
         if root.name == "project.toml":
             root = root.parent
         return Project.open(root)
-    except FileNotFoundError as err:
-        raise NotFound(str(err)) from err
+    except (FileNotFoundError, ValueError) as err:  # ValueError: an invalid project.toml
+        raise CommandError(str(err)) from err
 
 
 def _open_bundle(project, model_id: str):
@@ -210,7 +214,7 @@ def _open_bundle(project, model_id: str):
         return ModelBundle.from_project(project, model_id)
     except FileNotFoundError as err:
         have = ", ".join(project.models()) or "none yet"
-        raise NotFound(f"{err}\nmodels in {project.root}: {have}") from err
+        raise CommandError(f"{err}\nmodels in {project.root}: {have}") from err
 
 
 def _project_flag(args) -> str:
@@ -714,7 +718,8 @@ def cmd_apply(args) -> int:
     if not args.model and not skeleton:
         skeleton = list(project.config.skeleton)
     common = dict(device=args.device, batch_size=args.batch_size, skeleton=skeleton,
-                  labeled_video=args.labeled_video, pcutoff=args.pcutoff)
+                  labeled_video=args.labeled_video, pcutoff=args.pcutoff,
+                  display=None if args.model else project.config.display)
 
     def _report(results):
         for video, pose in results.items():
@@ -753,6 +758,7 @@ def cmd_label(args) -> int:
     # else derive bodyparts from the parquet (skeleton absent).
     bodyparts: list[str] | None = None
     skeleton: list[list[str]] = []
+    display: dict = {}  # marker/line style: the project's [display], else the sidecar's
     source = f"bodypart names read from {parquet} (no skeleton)"   # where they came from, for --verbose
     if args.model:
         bundle = ModelBundle.open(args.model)
@@ -766,6 +772,7 @@ def cmd_label(args) -> int:
         bundle = _open_bundle(project, args.model_id)
         bodyparts = list(bundle.card.bodyparts)
         skeleton = list(bundle.card.skeleton) or list(project.config.skeleton)
+        display = project.config.display
         source = shown(bundle.path / "model.toml")
         if not bundle.card.skeleton and skeleton:
             source += f" (skeleton from {shown(project.layout.project_toml)})"
@@ -773,6 +780,7 @@ def cmd_label(args) -> int:
         for sc in (sidecar_for_parquet(parquet), sidecar_for_parquet(beside_video_path(video))):
             if sc.is_file():
                 bodyparts, skeleton = read_fdlc_sidecar(sc)
+                display = read_fdlc_display(sc)
                 source = shown(sc)
                 break
 
@@ -781,9 +789,11 @@ def cmd_label(args) -> int:
     files_log.info("pose     %s", shown(parquet))
     files_log.info("markers  %s", source)
     files_log.info("output   %s", shown(out))
+    # --dotsize sizes every marker, including those the style sizes individually
+    explicit = {"dotsize": args.dotsize, "marker_radii": {}} if args.dotsize is not None else {}
     result = render_labeled_from_parquet(
         video, parquet, out, bodyparts=bodyparts, skeleton=skeleton,
-        pcutoff=args.pcutoff, dotsize=args.dotsize,
+        pcutoff=args.pcutoff, display=display, **explicit,
     )
     print(f"{video} -> {result}")
     return 0
@@ -1001,7 +1011,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--model", help="model bundle for bodyparts/skeleton")
     p.add_argument("--model-id", dest="model_id", help="model id inside --project")
     p.add_argument("--pcutoff", type=float, default=0.6)
-    p.add_argument("--dotsize", type=int, default=5)
+    p.add_argument("--dotsize", type=int, default=None,
+                   help="dot radius in pixels for every marker (default: the project's [display], else 5)")
     p.add_argument("-v", "--verbose", action="store_true",
                    help="list the files read and written (labels, frames, dataset, config, snapshots, outputs)")
     p.set_defaults(func=cmd_label)
@@ -1064,7 +1075,7 @@ def main(argv: list[str] | None = None) -> int:
     with _file_report(getattr(args, "verbose", False)):
         try:
             return args.func(args)
-        except NotFound as err:
+        except CommandError as err:
             print(err)
             return 2
 

@@ -69,9 +69,13 @@ class ProjectConfig:
     unique_bodyparts: list[str] = field(default_factory=list)
     skeleton: list[list[str]] = field(default_factory=list)
     notes: str = ""
+    #: the ``[display]`` table: marker colors and sizes, skeleton line colors (see display.py)
+    display: dict[str, Any] = field(default_factory=dict)
     schema_version: int = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
+        from .display import parse_display
+
         if not self.task:
             raise ValueError("ProjectConfig.task must be a non-empty string")
         if not self.bodyparts:
@@ -81,6 +85,15 @@ class ProjectConfig:
         for edge in self.skeleton:
             if len(edge) != 2:
                 raise ValueError(f"skeleton edges must be [a, b] pairs, got {edge!r}")
+        parse_display(self.display, bodyparts=[*self.bodyparts, *self.unique_bodyparts],
+                      skeleton=self.skeleton)
+
+    @property
+    def style(self):
+        """The ``[display]`` table, checked: a :class:`~.display.DisplayStyle`."""
+        from .display import parse_display
+
+        return parse_display(self.display)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ProjectConfig:
@@ -88,7 +101,10 @@ class ProjectConfig:
         return cls(**{f.name: d[f.name] for f in dataclasses.fields(cls) if f.name in d})
 
     def to_dict(self) -> dict[str, Any]:
-        return dataclasses.asdict(self)
+        data = dataclasses.asdict(self)
+        if not data["display"]:  # no empty [display] table in project.toml
+            del data["display"]
+        return data
 
 
 @dataclass

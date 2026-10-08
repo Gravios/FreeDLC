@@ -229,6 +229,9 @@ earlier labels reload. If it has no `CollectedData_*` file -- a migrated project
 or after `.annotate/` was deleted -- one is written from `labels.parquet` before
 napari opens, so the existing labels are shown and kept.
 
+Marker names are hidden in napari; hold **N** to show them. Marker colors and
+sizes come from the project's `[display]` table (see "Marker colors and sizes").
+
 ## Train
 
 ```bash
@@ -514,6 +517,57 @@ the skeleton between them. The marker names and skeleton come from `--model`
 or `--project`/`--model-id` when given, and otherwise from the `.fdlc.toml`
 beside the pose file. `track` is for multi-animal output: it links each frame's detections
 into identities by centroid distance and writes `<base>.tracked.fdlc.parquet`.
+
+## Marker colors and sizes
+
+A `[display]` table in `project.toml` sets how markers are drawn in the annotator
+and in labeled videos, and how skeleton lines are drawn in labeled videos (the
+annotator draws no lines):
+
+```toml
+[display]
+dotsize = 6            # markers without a size of their own
+colormap = "tab20"     # colors for markers without a color of their own
+line_color = "white"   # skeleton lines without a color of their own
+line_width = 1
+
+[display.bodyparts]
+head_nose = { color = "red", size = 10 }
+head_mid  = { color = "orange" }
+back_T4   = { color = "#00c0ff", size = 8 }
+
+[[display.edges]]
+between = ["head_nose", "head_mid"]
+color = "red"
+width = 2
+
+[[display.edges]]
+between = ["back_T4", "back_T8"]
+color = "#00c0ff"
+```
+
+Every key is optional. Colors are names (`red`, `orange`, `tab:blue`) or hex
+codes. Sizes are dot diameters in pixels of the image they are drawn on: the
+full-resolution frame in the annotator, the video in a labeled video -- so the
+same size looks three times larger on a 640x360 video than on 1920x1080 frames.
+An edge is named by its two markers, in either order, and must be in the
+skeleton.
+
+Markers without a color of their own take one from `colormap`, in the order of
+`bodyparts`. A palette (`tab10`, `tab20`, `Set3`, `Dark2`, ...) gives its colors in
+order, which keeps neighbouring markers distinct; a gradient (`viridis`,
+`plasma`, ...) is sampled evenly across its range. Without `colormap`, the
+annotator uses `viridis` and labeled videos a hue wheel.
+
+The table is checked whenever the project is opened: a misspelled marker, an
+edge not in the skeleton, an unreadable color or an unknown key stops the
+command with a list of what is wrong.
+
+In napari, the point-size control sets the size of markers without a size of
+their own; changes made there are not written back to `project.toml`. `fdlc
+label --dotsize R` draws every marker with radius `R`, overriding the table.
+`apply --beside-video` stores the table in the `.fdlc.toml` sidecar, so a later
+`fdlc label` draws the same style.
 
 ## Skeleton configs
 
