@@ -213,7 +213,15 @@ def launch_napari(config_path: Path, dataset_dir: Path) -> None:
     """Open napari-deeplabcut on ``[dataset_dir, config_path]`` and block until closed.
 
     Isolated so it is the only part that needs Qt; imported lazily.
+
+    napari-freedlc is built and tested on PySide6, but qtpy -- through which napari
+    picks a Qt binding -- prefers PyQt5 whenever that is installed, and some napari
+    installs pull it in. ``QT_API`` is therefore set to ``pyside6`` unless it is set
+    already.
     """
+    import os
+
+    os.environ.setdefault("QT_API", "pyside6")
     import napari  # noqa: F401
     from napari import Viewer, run
 

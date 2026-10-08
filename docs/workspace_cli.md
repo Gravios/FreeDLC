@@ -745,6 +745,15 @@ An older version that attached no log handler. Per-epoch numbers are still in
 
 Bugs in older versions of `fdlc train` and `fdlc evaluate`; update.
 
+### napari: `super-class __init__() of type KeypointControls was never called`
+
+napari is running on PyQt5 (or PyQt6) instead of PySide6: when both are installed,
+qtpy, which napari uses to pick one, prefers PyQt5. `fdlc annotate` now asks for
+PySide6 (it sets `QT_API=pyside6` unless you have set it), and napari-freedlc no
+longer fails on PyQt. With older versions, `export QT_API=pyside6`, or remove the
+extra binding: `pip list | grep -i pyqt`, then `pip uninstall pyqt5 pyqt5-qt5
+pyqt5-sip`.
+
 ### napari-freedlc fails to import with `cannot import name 'SYMBOL_TRANSLATION_INVERTED'`
 
 napari 0.9 removed a name the plugin uses. napari-freedlc requires `napari<0.9`,
