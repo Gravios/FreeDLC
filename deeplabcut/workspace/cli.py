@@ -200,10 +200,87 @@ def _extract_one(args_tuple):
         return (video_id, None, str(err))
 
 
+def _extract_from_run(args) -> int:
+    """Add the frames an analyze run's model was least sure of to their videos' frame sets."""
+    import pandas as pd
+
+    from . import refine
+    from .annotate import resolve_video_id
+    from .frames import add_frames, extracted_indices, frame_index
+
+    if args.overwrite or args.match_original:
+        print("--from-run adds frames to the existing sets; it cannot be combined with "
+              "--overwrite or --match-original")
+        return 2
+    try:
+        project = _open_project(args.project)
+        run = refine.resolve_run(project, args.from_run)
+        only = resolve_video_id(project, args.video) if args.video else None
+    except (FileNotFoundError, ValueError) as err:
+        print(err)
+        return 2
+    poses = refine.run_poses(project, run)
+    if not poses:
+        print(f"no pose.parquet found for run {run.run_id} ({run.dir})")
+        return 2
+
+    pcutoff = args.pcutoff if args.pcutoff is not None else refine.run_pcutoff(run)
+    n_markers = len(project.config.bodyparts) + len(project.config.unique_bodyparts)
+    max_shown = args.max_shown if args.max_shown is not None else n_markers // 3
+    print(f"run {run.run_id}: frames showing at most {max_shown} of {n_markers} marker(s) "
+          f"at pcutoff {pcutoff:g}; up to {args.n} new frame(s) per video")
+
+    added, failures, matched, touched = 0, 0, set(), []
+    for video, pose in poses:
+        vid = refine.video_id_for(project, video) if video is not None else None
+        if vid is None:
+            if only is None:  # with a video given, the others do not matter
+                print(f"{video or pose}: no registered video matches; skipped")
+                failures += 1
+            continue
+        matched.add(vid)
+        if only is not None and vid != only:
+            continue
+        stats = refine.frame_stats(pd.read_parquet(pose), pcutoff)
+        picks, n_low = refine.pick_low_confidence(
+            stats, args.n, max_shown=max_shown, exclude=extracted_indices(project, vid))
+        try:
+            written = add_frames(project, vid, picks)
+        except (FileNotFoundError, ValueError, OSError) as err:
+            print(f"{vid}: {err}")
+            failures += 1
+            continue
+        detail = ""
+        if written:
+            shown_counts = stats.loc[[frame_index(p.name) for p in written], "shown"]
+            low, high = shown_counts.min(), shown_counts.max()
+            detail = f", showing {low if low == high else f'{low}-{high}'} marker(s)"
+            touched.append(vid)
+        print(f"{vid}: {n_low} of {len(stats)} frame(s) qualify; added {len(written)}{detail} "
+              f"-> {project.layout.frames_dir(vid, 'original')}")
+        added += len(written)
+
+    if only is not None and only not in matched:
+        print(f"run {run.run_id} has no poses for {only}")
+        return 2
+    print(f"done: {added} frame(s) added to {len(touched)} video(s)")
+    if touched:
+        print(f"label them with `dlc-ws annotate <video> --project {args.project}` (e.g. {touched[0]})")
+    return 2 if failures else 0
+
+
 def cmd_extract(args) -> int:
     from .annotate import resolve_video_id
     from .frames import extract_frames
 
+    if args.from_run:
+        if args.all and args.video:
+            print("give a video or --all, not both")
+            return 2
+        return _extract_from_run(args)
+    if args.max_shown is not None or args.pcutoff is not None:
+        print("--max-shown and --pcutoff only apply with --from-run")
+        return 2
     if args.all and args.video:
         print("give a video or --all, not both")
         return 2
@@ -568,7 +645,8 @@ def cmd_apply(args) -> int:
         _report(apply_to_videos(bundle, videos, out_root, **common))
         return 0
 
-    run = project.new_run("analyze", model_id=args.model_id, inputs=[str(v) for v in videos])
+    run = project.new_run("analyze", model_id=args.model_id, inputs=[str(v) for v in videos],
+                          params={"pcutoff": args.pcutoff})
     run.start()
     out_root = Path(args.out) if args.out else run.dir
     results = apply_to_videos(bundle, videos, out_root, **common)
@@ -775,6 +853,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--match-original", action="store_true", dest="match_original",
                    help="re-read the processed frames from the processed video registered now, at the "
                         "frames already extracted from the original (keeps the selection and the labels)")
+    p.add_argument("--from-run", dest="from_run", metavar="RUN",
+                   help="add the frames an analyze run (id, unique prefix, 'latest' or directory) was least "
+                        "sure of: -n per video, among frames showing at most --max-shown markers")
+    p.add_argument("--max-shown", type=int, default=None, dest="max_shown", metavar="K",
+                   help="with --from-run: a frame qualifies when at most K markers reach pcutoff "
+                        "(default: a third of the markers)")
+    p.add_argument("--pcutoff", type=float, default=None,
+                   help="with --from-run: likelihood a marker needs to be drawn "
+                        "(default: the run's own, else 0.6)")
     p.set_defaults(func=cmd_extract)
 
     p = sub.add_parser("annotate", help="open the napari annotator on a video (extracts frames if needed)")

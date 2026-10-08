@@ -701,6 +701,139 @@ def test_extract_match_original_cli():
         assert code == 0 and str(proc_dir) in out
 
 
+# ------------------------------------------------ extract --from-run
+def _analyze_run(proj, video: Path, likelihood, *, pcutoff=0.6, bodyparts=BODYPARTS):
+    """An analyze run whose pose for ``video`` has ``likelihood[frame]`` for every marker."""
+    from deeplabcut.workspace.manifest import write_manifest
+
+    run = proj.new_run("analyze", params={"pcutoff": pcutoff})
+    out = run.dir / "clip-01"
+    out.mkdir(parents=True)
+    rows = [(f, "animal", bp, 1.0, 2.0, float(lk)) for f, lks in enumerate(likelihood)
+            for bp, lk in zip(bodyparts, lks, strict=True)]
+    pd.DataFrame(rows, columns=["frame", "individual", "bodypart", "x", "y", "likelihood"]).to_parquet(
+        out / "pose.parquet")
+    write_manifest(out / "run.toml", {"run_id": "clip-01", "kind": "analyze", "inputs": [str(video)]})
+    run.finish(outputs=[str(out / "pose.parquet")])
+    return run
+
+
+def test_frame_stats_counts_the_markers_a_labeled_video_draws():
+    from deeplabcut.workspace import refine
+
+    df = pd.DataFrame({"frame": [0, 0, 1, 1], "individual": "a", "bodypart": ["s", "p", "s", "p"],
+                       "x": [1.0, np.nan, 1.0, 1.0], "y": 1.0, "likelihood": [0.9, 0.9, 0.6, 0.59]})
+    stats = refine.frame_stats(df, 0.6)
+    assert stats["shown"].tolist() == [1, 1]          # NaN position not drawn; 0.6 is drawn, 0.59 not
+
+
+def test_pick_low_confidence_spreads_over_the_episodes():
+    from deeplabcut.workspace import refine
+
+    shown = np.full(1000, 15)
+    shown[100:400] = 0                                # one long bad episode
+    shown[700:760] = 1                                # and a fifth as long, milder one
+    stats = pd.DataFrame({"shown": shown, "likelihood": np.linspace(0, 1, 1000)})
+    picks, n_low = refine.pick_low_confidence(stats, 6, max_shown=5)
+    assert n_low == 360 and len(picks) == 6
+    assert all(100 <= f < 400 or 700 <= f < 760 for f in picks)
+    assert min(np.diff(picks)) > 20                   # not six neighbours
+    assert sum(700 <= f < 760 for f in picks) == 1     # picks follow how many frames failed
+
+    picks, _ = refine.pick_low_confidence(stats, 400, max_shown=5, exclude=range(100, 400))
+    assert picks == list(range(700, 760))             # fewer qualify than asked: all of them
+    assert refine.pick_low_confidence(stats, 5, max_shown=-1) == ([], 0)
+
+
+def test_resolve_run_by_latest_prefix_and_path():
+    from deeplabcut.workspace import refine
+
+    with tempfile.TemporaryDirectory() as d:
+        proj = Project.create(Path(d) / "ws", task="reach", bodyparts=BODYPARTS)
+        try:
+            refine.resolve_run(proj, "latest")
+        except ValueError as err:
+            assert "no analyze runs" in str(err)
+        else:
+            raise AssertionError("expected ValueError")
+        first, second = proj.new_run("analyze"), proj.new_run("analyze")
+        latest = max((first, second), key=lambda r: r.run_id)
+        assert refine.resolve_run(proj, "latest").run_id == latest.run_id
+        assert refine.resolve_run(proj, first.run_id).run_id == first.run_id
+        assert refine.resolve_run(proj, str(second.dir)).run_id == second.run_id
+        for bad, message in (("2", "fits 2 analyze runs"), ("x", "no analyze run 'x'")):
+            try:
+                refine.resolve_run(proj, bad)
+            except ValueError as err:
+                assert message in str(err)
+            else:
+                raise AssertionError(f"expected ValueError for {bad!r}")
+        assert refine.run_pcutoff(first) == 0.6                     # nothing recorded: apply's default
+
+
+def test_extract_from_run_adds_low_confidence_frames_to_both_sets():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        proj, vid = _project_with_pair(d, orig=(160, 120), proc=(80, 60))
+        before = {p.name: p.read_bytes() for p in frames_mod.extract_frames(proj, vid, n=4)}
+        have = frames_mod.extracted_indices(proj, vid)
+        likelihood = [(0.9, 0.9)] * 40
+        likelihood[10:20] = [(0.1, 0.2)] * 10        # nothing drawn
+        likelihood[30:34] = [(0.9, 0.1)] * 4         # one marker drawn
+        processed = proj.video_media_files(vid, "processed")[0]
+        _analyze_run(proj, processed, likelihood)    # run on the processed video
+        ws_root = str(d / "ws")
+
+        code, out = _run(["extract", "--from-run", "latest", "--project", ws_root, "-n", "3"])
+        assert code == 0, out
+        assert "at most 0 of 2 marker(s) at pcutoff 0.6" in out       # default: a third of the markers
+        added = frames_mod.extracted_indices(proj, vid) - have
+        assert len(added) == 3 and all(10 <= f < 20 for f in added), added
+        assert f"{vid}: {10 - len(have & set(range(10, 20)))} of 40 frame(s) qualify; added 3" in out
+        orig_dir, proc_dir = (proj.layout.frames_dir(vid, k) for k in ("original", "processed"))
+        assert sorted(p.name for p in proc_dir.glob("*.png")) == sorted(p.name for p in orig_dir.glob("*.png"))
+        assert _frame_sizes(proc_dir) == {(80, 60)} and _frame_sizes(orig_dir) == {(160, 120)}
+        assert {n: (orig_dir / n).read_bytes() for n in before} == before        # the old set is untouched
+
+        # again: different frames, and --max-shown widens what qualifies
+        code, out = _run(["extract", vid, "--from-run", "latest", "--project", ws_root,
+                          "-n", "20", "--max-shown", "1"])
+        assert code == 0, out
+        low = set(range(10, 20)) | set(range(30, 34))
+        assert frames_mod.extracted_indices(proj, vid) == have | low           # every one, nothing else
+        assert f"added {len(low - have - added)}, showing 0-1 marker(s)" in out
+
+
+def test_extract_from_run_reports_what_it_cannot_use():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        proj, vid = _project_with_pair(d)
+        ws_root = str(d / "ws")
+        code, out = _run(["extract", "--from-run", "latest", "--project", ws_root])
+        assert code == 2 and "no analyze runs" in out
+        stranger = _make_video(d / "elsewhere" / "stranger.mp4", n_frames=5)
+        _analyze_run(proj, stranger, [(0.1, 0.1)] * 5)
+        code, out = _run(["extract", "--from-run", "latest", "--project", ws_root])
+        assert code == 2 and "stranger.mp4: no registered video matches; skipped" in out
+        code, out = _run(["extract", vid, "--from-run", "latest", "--project", ws_root])
+        assert code == 2 and f"has no poses for {vid}" in out and "stranger" not in out
+        for extra in (["--overwrite"], ["--match-original"]):
+            code, out = _run(["extract", "--from-run", "latest", "--project", ws_root, *extra])
+            assert code == 2 and "cannot be combined" in out
+        code, out = _run(["extract", vid, "--project", ws_root, "--pcutoff", "0.5"])
+        assert code == 2 and "only apply with --from-run" in out
+
+
+def test_add_frames_skips_existing_and_out_of_range_indices():
+    with tempfile.TemporaryDirectory() as d:
+        proj, vid = _project_with_pair(Path(d), n_frames=40)
+        first = frames_mod.extract_frames(proj, vid, n=2)
+        existing = frames_mod.extracted_indices(proj, vid)
+        written = frames_mod.add_frames(proj, vid, [*existing, 5, 5, 39, 40, 999])
+        assert [frames_mod.frame_index(p.name) for p in written] == [5, 39]
+        assert len(first[0].name) == len(written[0].name)                    # same zero padding
+
+
 if __name__ == "__main__":
     passed = 0
     for name, fn in sorted(globals().items()):

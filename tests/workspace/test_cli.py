@@ -358,6 +358,7 @@ def test_apply_dispatch_project(monkeypatch):
         assert len(seen["videos"]) == 2 and seen["batch_size"] == 4  # both videos, batch flag passed
         assert len(proj.runs("analyze")) == 1                        # one analyze run for the batch
         assert proj.runs("analyze")[0].manifest().status == "finished"
+        assert proj.runs("analyze")[0].manifest().params["pcutoff"] == 0.6   # what extract --from-run uses
 
 
 def test_apply_dispatch_dropin_model(monkeypatch):

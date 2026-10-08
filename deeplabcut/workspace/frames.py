@@ -49,6 +49,9 @@ from pathlib import Path
 __all__ = [
     "resolve_media",
     "extract_frames",
+    "add_frames",
+    "frame_index",
+    "extracted_indices",
 ]
 
 log = logging.getLogger(__name__)
@@ -146,10 +149,16 @@ def _frame_indices_kmeans(
     return sorted(dict.fromkeys(chosen))
 
 
-def _frame_index(name: str) -> int | None:
+def frame_index(name: str) -> int | None:
     """The source frame index an extracted frame's file name carries, if it has one."""
     m = _FRAME_NAME.fullmatch(name)
     return int(m.group(1)) if m else None
+
+
+def extracted_indices(project, video_id: str, kind: str = "original") -> set[int]:
+    """The frame indices already extracted for ``video_id`` into ``frames/<kind>/``."""
+    frames_dir = project.layout.frames_dir(video_id, kind)
+    return {i for p in frames_dir.glob("*.png") if (i := frame_index(p.name)) is not None}
 
 
 def _grab(video, targets) -> list[Path]:
@@ -194,7 +203,7 @@ def _restore_frames(project, video_id: str, kind: str, names) -> list[str]:
     and left alone rather than raised.
     """
     frames_dir = project.layout.frames_dir(video_id, kind)
-    targets = [(idx, frames_dir / name) for name in names if (idx := _frame_index(name)) is not None]
+    targets = [(idx, frames_dir / name) for name in names if (idx := frame_index(name)) is not None]
     restored: list[str] = []
     if targets:
         try:
@@ -347,6 +356,44 @@ def extract_frames(
             for stale in proc_dir.glob("*.png"):
                 stale.unlink()
         _grab_from(project, video_id, "processed",
-                   [(idx, proc_dir / p.name) for p in written if (idx := _frame_index(p.name)) is not None])
+                   [(idx, proc_dir / p.name) for p in written if (idx := frame_index(p.name)) is not None])
 
+    return written
+
+
+def add_frames(project, video_id: str, indices) -> list[Path]:
+    """Add the frames at ``indices`` to ``video_id``'s frame set; return those written.
+
+    The frames already there, and the labels keyed by their names, are left alone:
+    indices already extracted are skipped, as are indices past the end of the
+    original video. New frames are named like the rest (``img<index>.png``), and the
+    same frames are read from the processed video when one is registered.
+
+    Raises:
+        FileNotFoundError: if the original video is not registered or its media is gone.
+        ValueError: if the original video reports no frames.
+    """
+    import cv2
+
+    if not indices:
+        return []
+    frames_dir = project.layout.frames_dir(video_id, "original")
+    have = extracted_indices(project, video_id)
+    media = resolve_media(project, video_id, "original")
+    video = cv2.VideoCapture(str(media))
+    try:
+        total = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total <= 0:
+            raise ValueError(f"video {media} reports no frames (unreadable or empty)")
+        wanted = sorted({int(i) for i in indices} - have)
+        beyond = [i for i in wanted if not 0 <= i < total]
+        if beyond:
+            log.warning("%d frame(s) of %s are past the end of %s (%d frames) and were skipped",
+                        len(beyond), video_id, media, total)
+        width = max(4, len(str(total - 1)))
+        written = _grab(video, [(i, frames_dir / f"img{i:0{width}d}.png") for i in wanted if 0 <= i < total])
+    finally:
+        video.release()
+    if written and project.has_video(video_id, "processed"):
+        _restore_frames(project, video_id, "processed", [p.name for p in written])
     return written

@@ -349,6 +349,48 @@ file. Pass video of the resolution the model was trained on: processed-size
 video for a model trained with `--frames processed`, full-resolution video for
 one trained with `--frames original`.
 
+With `--project`, the poses go to an analyze run, `runs/analyze/<run_id>/<video>/pose.parquet`,
+which `extract --from-run` reads (see the next section). The run records the
+`--pcutoff` its labeled videos were drawn with.
+
+## More frames where the model is unsure: `extract --from-run`
+
+```bash
+dlc-ws apply --project ws --model-id <model_id> reduced/*.mp4 --labeled-video
+dlc-ws extract --from-run latest --project ws -n 10
+dlc-ws annotate session1 --project ws
+dlc-ws train ws
+```
+
+`--from-run` reads the poses of an analyze run and adds, to each video's frame
+set, up to `-n` frames in which few or none of the markers would be drawn in the
+labeled video -- the frames the model handles worst. The run is named by its id,
+a unique start of it, `latest`, or its directory. Give a video to limit it to
+that one.
+
+A frame qualifies when at most `--max-shown` markers reach the pcutoff
+(default: a third of the markers, rounded down; 5 of 15). The pcutoff is the
+run's own unless `--pcutoff` is given. The picks are spread over the qualifying
+frames: they are split, in time order, into `-n` runs of equal length and the
+worst frame of each is taken (fewest markers drawn, then lowest mean
+likelihood). A long bad episode therefore gets more picks than a short one, but
+never `-n` neighbouring frames of it.
+
+The frames already extracted, and their labels, are kept; frames already in the
+set are not picked again. The new frames are read from the original video and,
+when one is registered, from the processed video, under the same names. A run
+on either video serves, since both have the same frame numbers. Each line of the
+report says how many frames qualified and how many markers the added ones show:
+
+```text
+run 20261008-094012-3fa2c1: frames showing at most 5 of 15 marker(s) at pcutoff 0.6; up to 10 new frame(s) per video
+session1: 1312 of 108012 frame(s) qualify; added 10, showing 0-4 marker(s) -> ws/sources/annotations/session1/frames/original
+```
+
+Every individual's markers count towards the total, so in a multi-animal
+project a frame in which one animal is seen well does not qualify even if
+another is missed.
+
 ## Use cases
 
 ### Train at the processed resolution (the default)

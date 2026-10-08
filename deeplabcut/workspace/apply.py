@@ -272,7 +272,8 @@ def _infer_to_df(bundle, video, pose_runner, detector_runner, *, cropping):
     )
 
 
-def _write_video_outputs(df, video, out_dir, bundle, *, snapshot, batch_size, device, cropping, started):
+def _write_video_outputs(df, video, out_dir, bundle, *, snapshot, batch_size, device, cropping, started,
+                         pcutoff=None):
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     pose_path = write_pose_parquet(df, out_dir / "pose.parquet")
@@ -286,7 +287,7 @@ def _write_video_outputs(df, video, out_dir, bundle, *, snapshot, batch_size, de
         snapshot=bundle.card.default_snapshot if snapshot == "default" else snapshot,
         inputs=[str(Path(video).resolve())],
         outputs=[pose_path.name],
-        params={"batch_size": batch_size, "device": device, "cropping": cropping},
+        params={"batch_size": batch_size, "device": device, "cropping": cropping, "pcutoff": pcutoff},
         code_version=code_version(),
     )
     write_manifest(out_dir / "run.toml", run.to_dict())
@@ -351,6 +352,7 @@ def apply_to_video(
     pose_path = _write_video_outputs(
         df, video, out_dir, bundle,
         snapshot=snapshot, batch_size=batch_size, device=device, cropping=cropping, started=started,
+        pcutoff=pcutoff,
     )
     files_log.info("  pose     %s (%d frame(s))", shown(pose_path), df["frame"].nunique() if len(df) else 0)
     files_log.info("  record   %s", shown(Path(out_dir) / "run.toml"))
