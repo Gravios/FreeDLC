@@ -47,6 +47,59 @@
 
 </div>
 
+# FreeDLC
+
+This repository is **FreeDLC**, a fork of DeepLabCut that adds a *workspace*
+project layout and the `fdlc` command to drive it. A workspace keeps sources,
+models and runs apart, records where every file came from, and lets you annotate
+on full-resolution video while training on a downscaled copy. The rest of
+DeepLabCut -- the `deeplabcut` API, the PyTorch engine, legacy projects -- is
+unchanged and documented further down this page and in the upstream docs.
+
+Annotation uses [napari-freedlc](https://github.com/Gravios/napari-freedlc), the
+matching fork of napari-deeplabcut.
+
+## Install
+
+```bash
+conda create -n fdlc python=3.12 && conda activate fdlc
+pip install torch torchvision                  # pick the build for your CUDA: https://pytorch.org
+git clone https://github.com/Gravios/FreeDLC.git
+git clone https://github.com/Gravios/napari-freedlc.git
+pip install -e "./FreeDLC[gui]"
+pip install -e ./napari-freedlc                # after FreeDLC: replaces the PyPI napari-deeplabcut
+fdlc --help
+```
+
+Install napari-freedlc **after** FreeDLC. Both provide the `napari-deeplabcut`
+package; `[gui]` asks for `napari-deeplabcut>=0.3.1`, and a napari-freedlc
+checkout without a release tag reports a lower version, so re-installing
+`FreeDLC[gui]` later puts the PyPI release back. Re-run the last install line if
+that happens. `pip install -e "./FreeDLC[onnx]"` adds what `fdlc export` needs.
+
+## The workspace pipeline
+
+```bash
+fdlc create ws --task reach --bodyparts snout paw tail --experimenters me
+fdlc add-video ws original/*.mp4                 # full-resolution recordings
+fdlc videos ws --register reduced-640x360/       # their downscaled copies, matched by name
+fdlc extract --all --project ws -n 20
+fdlc annotate <video_id> --project ws            # napari, on the full-resolution frames
+fdlc train ws --device cuda:0                    # on the downscaled frames
+fdlc evaluate ws <model_id> --pck 20
+fdlc apply --project ws --model-id <model_id> reduced-640x360/*.mp4 --labeled-video
+fdlc extract --from-run latest --project ws -n 10   # more frames, the model's markers proposed
+```
+
+- [docs/workspace_cli.md](docs/workspace_cli.md) -- the guide: every command, the
+  choices it involves, and troubleshooting.
+- [scripts/reduce_videos.sh](scripts/reduce_videos.sh) -- makes the downscaled
+  copies with ffmpeg, frame for frame.
+- [docs/onnx_export.md](docs/onnx_export.md) -- running a model without torch:
+  what exists (`fdlc export`) and what is planned.
+
+---
+
 # Welcome! 👋
 
 **DeepLabCut™️** is a toolbox for state-of-the-art markerless pose estimation of animals performing various behaviors. As long as you can see (label) what you want to track, you can use this toolbox, as it is animal and object agnostic. [Read a short development and application summary below](https://github.com/DeepLabCut/DeepLabCut#why-use-deeplabcut).

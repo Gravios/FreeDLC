@@ -7,7 +7,7 @@ project's *original* (full-resolution) video and writes frames into
 
 When the video also has a *processed* (downscaled) counterpart registered, the SAME
 frame indices are extracted from it into ``.../frames/processed/`` -- the set the model
-trains on. Two frame sets are kept on purpose (route 1): annotation happens on the
+trains on by default. Two frame sets are kept on purpose: annotation happens on the
 crisp original for precise marker placement, while training uses the processed frames
 so it matches the processed video inference runs on. Extracting the processed frames
 from the processed video (rather than downscaling the original PNGs) keeps them

@@ -12,12 +12,37 @@ from broken frame links.
 
 ```text
 create -> add-video -> extract -> annotate -> train -> evaluate -> apply
+   ^                                                                 |
+   '------------- extract --from-run (more frames to label) <--------'
 ```
 
-Every command has `--help`. Note that the project is given in two ways: most
-commands take it as the first positional argument (`fdlc train <project>`),
-while `extract` and `annotate` take the *video* positionally and the
-project as `--project` (default: the current directory).
+Installation is described in the [README](../README.md#install).
+
+## Commands at a glance
+
+| Command | Does |
+|---|---|
+| `create <dir>` | start a project: task, markers, skeleton |
+| `list skeletons [name]` | the bundled skeleton configs, or one in detail |
+| `export-skeleton <project>` | write the project's markers and skeleton as a reusable config |
+| `migrate <legacy> <dest>` | convert a legacy DeepLabCut project (config.yaml tree) |
+| `info <project>` | the task and markers, and how many videos, annotated videos, models and runs |
+| `add-video <project> <videos...>` | register original (or, with `--processed`, downscaled) videos |
+| `videos <project>` | what is registered, labeled and extracted per video; `--register DIR` pairs a folder of processed videos |
+| `extract [<video>] --project P` | frames to annotate; `--from-run` adds frames chosen from a model's results |
+| `annotate <video> --project P` | napari on the full-resolution frames |
+| `train <project>` | train a model on the labeled frames |
+| `models <project>` | the trained model bundles |
+| `evaluate <project> <model_id>` | pixel error against the annotations |
+| `apply <videos...>` | run a model on videos (`--project` + `--model-id`, or `--model <bundle>`) |
+| `label <video>` | render a labeled video from a pose file |
+| `track <pose.parquet>` | link multi-animal detections into identities across frames |
+| `export <bundle>` | write the pose model as ONNX (see [onnx_export.md](onnx_export.md)) |
+
+Every command has `--help`. The project is given in two ways: most commands take
+it as the first positional argument (`fdlc train <project>`), while `extract` and
+`annotate` take the *video* positionally and the project as `--project` (default:
+the current directory), and `apply` takes it as `--project`.
 
 ## Layout
 
@@ -34,7 +59,7 @@ project as `--project` (default: the current directory).
 |     '- labels.toml          which pixel space labels.parquet is in
 |- models/<model_id>/         portable model bundles (model.toml, pose.yaml, snapshots/)
 |- runs/<kind>/<run_id>/      one directory per train / evaluate / analyze run
-|- derived/
+|- derived/                   reserved; nothing writes here yet
 '- .annotate/<video_id>/      staging for the annotator (see "Annotate")
 ```
 
@@ -148,6 +173,9 @@ replacing the processed video. The selection, the original frames and the labels
 are untouched, so no annotation is lost. With `--all` it skips videos that have
 no processed video.
 
+To add frames chosen from where a trained model is unsure or confident, see
+`extract --from-run` below.
+
 `--overwrite` discards the set and selects again. Labels are keyed by frame file
 name, so after `--overwrite` existing labels may point at frames that no longer
 exist. Do not use it on a video you have already annotated unless you intend to
@@ -160,9 +188,10 @@ fdlc annotate session1 --project ws
 ```
 
 This opens the napari annotator (the `napari-freedlc` plugin) on the original
-frames. Save the keypoints layer in napari (File > Save Selected Layer(s), Ctrl+S),
-then close the window. On close the labels are
-read into the workspace:
+frames, extracting them first if there are none yet (`-n`, `--mode` as for
+`extract`). Save the keypoints layer in napari (File > Save Selected Layer(s),
+Ctrl+S), then close the window. On close, what was last saved is read into the
+workspace -- changes made after the last save are not:
 
 - `labels.parquet` -- the annotations in long form, in the pixels of the original
   frames you placed them on;
@@ -312,7 +341,8 @@ skeleton came from, and the output.
 Images are augmented on the fly with DeepLabCut's defaults: rotation up to 30
 degrees and rescaling between 0.5x and 1.25x (applied to half the images), a
 448x448 keypoint-aware crop, Gaussian noise and motion blur. Horizontal flips
-are off. These are not yet configurable from `fdlc train`; the resolved
+are off. Frames smaller than the crop are padded to it first, so at 640x360 a
+training image is a padded full frame and at 192x108 it is mostly padding. These are not yet configurable from `fdlc train`; the resolved
 settings are written to `train/pytorch_config.yaml` and printed at the start of
 the log.
 
@@ -320,12 +350,22 @@ the log.
 
 ```bash
 fdlc evaluate ws <model_id>
+fdlc evaluate ws <model_id> --videos session1 session2 --pck 20
 ```
 
 Runs the model on the labeled frames and reports the error against the
 annotations, in pixels. It scores on the frame set the model was trained on,
 read from `model.toml`; the annotations are converted to match. The metrics are
-printed and stored on the run and the model card.
+printed and stored on the run and the model card. `--videos` limits it to some
+videos; by default every annotated video is scored.
+
+**Every labeled frame is scored, including the ones the model was trained on.**
+That makes it a check of how well the model fits its own annotations, not of how
+well it generalizes; a large error here means the model cannot even reproduce
+its training data. The held-out numbers are the test metrics computed during
+training, on the frames `--train-fraction` left out, in
+`runs/train/<run_id>/train/learning_stats.csv` and printed in the log.
+`--pcutoff` (default 0.6) sets which predictions count as confident.
 
 The report gives both the mean and the median error, overall and per marker
 (`per_bodypart`, `per_bodypart_median`). Read them together: pose errors are
@@ -342,16 +382,31 @@ the same miss is 2x larger in pixels on frames twice the size.
 
 ```bash
 fdlc apply --project ws --model-id <model_id> session1-320x240.mp4 --labeled-video
+fdlc apply --project ws --model-id <model_id> reduced-640x360/ --device cuda:0 --batch-size 32
 ```
 
-`apply` runs on the video files you pass, so the resolution is your choice of
-file. Pass video of the resolution the model was trained on: processed-size
-video for a model trained with `--frames processed`, full-resolution video for
-one trained with `--frames original`.
+`apply` runs on the video files you pass (files, folders or globs), so the
+resolution is your choice of file. Pass video of the resolution the model was
+trained on: processed-size video for a model trained with `--frames processed`,
+full-resolution video for one trained with `--frames original`.
 
-With `--project`, the poses go to an analyze run, `runs/analyze/<run_id>/<video>/pose.parquet`,
-which `extract --from-run` reads (see the next section). The run records the
-`--pcutoff` its labeled videos were drawn with.
+Where the results go:
+
+- with `--project`, to an analyze run: `runs/analyze/<run_id>/<video>/`, named
+  after the video file (lower case, other characters as `-`), holds `pose.parquet`, a `run.toml` naming the video, and with `--labeled-video`
+  a `labeled.mp4`. This is what `extract --from-run` reads (see the next
+  section). The run records the `--pcutoff` its labeled videos were drawn with
+  (default 0.6: a marker is drawn when its likelihood reaches it). `--out DIR`
+  writes the per-video folders under `DIR` instead; the run still lists them.
+- with `--beside-video`, next to each video as `<stem>.fdlc.parquet`,
+  `<stem>.fdlc.toml` and `<stem>.fdlc.mp4`. No run is made, so these cannot be
+  used with `extract --from-run`.
+- with `--model <bundle>` instead of `--project`, a model bundle is used on its
+  own, without a project, and the results go to `--out` (default
+  `dlc-predictions/`).
+
+`pose.parquet` has one row per frame, individual and marker: `frame, individual,
+bodypart, x, y, likelihood`, in the pixels of the video it was run on.
 
 ## More frames from a model's own results: `extract --from-run`
 
@@ -416,6 +471,46 @@ Every individual's markers count towards the total, so in a multi-animal
 project a frame in which one animal is seen well is not unsure even if another
 is missed. Proposed positions go to the project's individuals in the order the
 model numbers them.
+
+## Labeled videos and tracking
+
+```bash
+fdlc label session1.mp4                                  # from session1.fdlc.parquet beside it
+fdlc label session1.mp4 --parquet runs/analyze/<run_id>/session1/pose.parquet --project ws --model-id <model_id>
+fdlc track session1.fdlc.parquet --max-distance 50 --max-gap 10
+```
+
+`label` draws a pose file onto its video: markers at or above `--pcutoff` and
+the skeleton between them. The marker names and skeleton come from `--model`
+or `--project`/`--model-id` when given, and otherwise from the `.fdlc.toml`
+beside the pose file. `track` is for multi-animal output: it links each frame's detections
+into identities by centroid distance and writes `<base>.tracked.fdlc.parquet`.
+
+## Skeleton configs
+
+```bash
+fdlc list skeletons                      # the bundled configs
+fdlc list skeletons RodentH5B7T3         # one config's markers, edges and segments
+fdlc create ws --task reach --skeleton-config RodentH5B7T3
+fdlc export-skeleton ws --name MyRig     # this project's markers and edges as a config
+```
+
+A skeleton config names a rig's markers, its skeleton edges and its kinematic
+tree (segments), in the table layout mufasa's `project.toml` uses.
+`--skeleton-config` takes the markers and edges from one; `export-skeleton`
+writes one from a project, to `.fdlc/skeletons/` by default.
+
+## Legacy projects
+
+```bash
+fdlc migrate /path/to/legacy-project ws
+```
+
+Converts a DeepLabCut project (`config.yaml`, `labeled-data/`,
+`dlc-models-pytorch/`) into a workspace: its videos, annotations and trained
+models. `--link` sets how files are brought across (`symlink` by default),
+and `--no-videos`, `--no-annotations`, `--no-models` leave parts out. The
+legacy project is only read.
 
 ## Use cases
 
@@ -569,4 +664,9 @@ Bugs in older versions of `fdlc train` and `fdlc evaluate`; update.
 
 ### napari-freedlc fails to import with `cannot import name 'SYMBOL_TRANSLATION_INVERTED'`
 
-napari 0.9 removed a name the plugin uses. Install `napari<0.9`.
+napari 0.9 removed a name the plugin uses. napari-freedlc requires `napari<0.9`,
+so this usually means napari was upgraded by another install, or the PyPI
+napari-deeplabcut replaced napari-freedlc (re-installing `FreeDLC[gui]` does
+that; see the README's Install section). Check with `pip show napari-deeplabcut`:
+the location should be your napari-freedlc checkout. Re-run
+`pip install -e ./napari-freedlc`.

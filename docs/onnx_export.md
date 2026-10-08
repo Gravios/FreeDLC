@@ -1,9 +1,24 @@
 # ONNX export for workspace bundles — design sketch
 
-Status: **design only, not implemented.** Every code block below is a sketch. None
-of it has been run — ONNX export requires tracing a real torch model, which the
-build/CI environment here cannot do. Treat this as a plan to implement and
-validate on `nphy-069`, not as working code.
+Status: **milestone 1 is implemented; nothing yet runs a model through ONNX.**
+
+What exists (`deeplabcut/workspace/onnx_export.py`, install with `pip install -e ".[onnx]"`):
+
+- `fdlc export <bundle> [--opset 18]` writes the bundle's pose model to
+  `snapshots/pose.onnx` and records it on the card (`ModelCard.pose_onnx`).
+- `fdlc export <bundle> --check [--atol 1e-3 --rtol 1e-3 --batch N]` first runs the
+  torch model and the ONNX model on the same input, prints the difference for every
+  output tensor, and exports only if they match.
+- `ModelBundle.build_pose_runner(backend="onnx")` returns an `OnnxRunner`: an
+  onnxruntime session that runs the forward pass and returns the raw head outputs.
+
+What does not exist yet: decoding those outputs into keypoints, so `fdlc apply`
+always uses torch; and detector export for top-down models. The export and the
+parity check are covered only by tests that mock torch -- run `fdlc export --check`
+on a torch machine before relying on an exported model.
+
+The rest of this page is the design the implementation started from. Its code
+blocks are sketches, not the code as written.
 
 ## Goal
 
@@ -35,7 +50,7 @@ ModelCard:  + pose_onnx: str | None      + detector_onnx: str | None
 ModelBundle: + export_onnx(opset=18, dynamic=True)
              + build_pose_runner(..., backend="torch"|"onnx")
 apply:       unchanged (runner is an interface)
-cli:         + fdlc export <bundle> [--onnx] [--opset 18]
+cli:         + fdlc export <bundle> [--opset 18] [--check]
 ```
 
 ## Export path (sketch)
@@ -137,10 +152,11 @@ parity checks above are the ones that matter and they need torch + onnxruntime.
 
 ## Suggested increments
 
-1. `ModelCard.pose_onnx` field + `fdlc export --onnx` writing `pose.onnx`
-   (pose-only), plumbing tests with mocks.
-2. `OnnxPoseRunner` + `build_pose_runner(backend="onnx")`, reusing the numpy
-   heatmap decoder; parity test vs torch on real crops.
+1. *(done)* `ModelCard.pose_onnx` field + `fdlc export` writing `pose.onnx`
+   (pose-only) with a `--check` parity gate, plumbing tests with mocks.
+2. *(started)* `build_pose_runner(backend="onnx")` returns a forward-pass-only
+   `OnnxRunner`. Still to do: decode its outputs with the numpy heatmap decoder
+   behind the torch runner's interface, and a parity test vs torch on real crops.
 3. Detector export (`detector.onnx`) — the hard, iterate-until-it-matches step.
-4. `onnxruntime` as an optional dependency extra (`freedlc[onnx]`), so the torch-free
-   deployment path doesn't pull torch at all.
+4. *(partly done)* `onnx`/`onnxruntime` are an optional extra (`.[onnx]`); torch is
+   still a core dependency, so a torch-free deployment needs its own slim package.

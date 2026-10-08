@@ -20,6 +20,8 @@ parts:
           - file: docs/quick-start/tutorial_maDLC
           - file: docs/main-workflows/multi-animal-tracking
       - file: docs/workspace_cli
+        sections:
+          - file: docs/onnx_export
       # - file: docs/standardDeepLabCut_UserGuide
       # - file: docs/maDLC_UserGuide
       - file: docs/Overviewof3D

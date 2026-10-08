@@ -217,10 +217,10 @@ def ingest_video_annotations(
     and nothing is linked or copied; ``link`` is then unused.
 
     ``scale`` multiplies ``(x, y)`` before writing, mapping annotation coordinates
-    from the frames they were placed on into another pixel space -- used to convert
-    labels made on original-resolution frames into the processed space the model
-    trains on. It defaults to ``(1.0, 1.0)`` (identity), so callers that annotate and
-    train in the same space are unaffected.
+    from the frames they were placed on into another pixel space. It defaults to
+    ``(1.0, 1.0)`` (identity), which is what ``fdlc annotate`` uses: labels are stored
+    as placed, and training converts them to the frame set it uses. A non-identity
+    scale writes processed-space labels, as versions before that did.
 
     Alongside the labels a ``labels.toml`` records which space they are now in
     (``processed`` when a non-identity ``scale`` was applied, else ``original``) and
