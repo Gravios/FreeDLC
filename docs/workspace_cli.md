@@ -39,10 +39,25 @@ Installation is described in the [README](../README.md#install).
 | `track <pose.parquet>` | link multi-animal detections into identities across frames |
 | `export <bundle>` | write the pose model as ONNX (see [onnx_export.md](onnx_export.md)) |
 
-Every command has `--help`. The project is given in two ways: most commands take
-it as the first positional argument (`fdlc train <project>`), while `extract` and
-`annotate` take the *video* positionally and the project as `--project` (default:
-the current directory), and `apply` takes it as `--project`.
+Every command has `--help`.
+
+**The project can be left out.** Run inside a project -- in its root or any folder
+below it -- and every command finds it, the way git finds a repository:
+
+```bash
+cd ws
+fdlc videos
+fdlc train --device cuda:0
+fdlc evaluate <model_id> --pck 20
+fdlc extract --from-run latest -n 10
+```
+
+To name it instead, most commands take it as the first positional argument
+(`fdlc train ws`), while `extract` and `annotate` take the *video* positionally
+and the project as `--project`, and `apply` takes it as `--project`. Either form
+accepts the project root or its `project.toml`. `add-video` tells the two apart
+by `project.toml`: inside a project, `fdlc add-video a.mp4 b.mp4` adds both files.
+The examples on this page name the project (`ws`) so they work from anywhere.
 
 ## Layout
 

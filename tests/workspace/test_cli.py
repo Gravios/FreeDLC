@@ -416,6 +416,85 @@ def test_evaluate_dispatch(monkeypatch):
         assert captured["pck_threshold"] == 5.0 and captured["pcutoff"] == 0.6
 
 
+
+@contextlib.contextmanager
+def _cwd(path):
+    import os
+
+    before = os.getcwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(before)
+
+
+def test_the_project_is_found_from_the_current_directory(monkeypatch):
+    with tempfile.TemporaryDirectory() as d:
+        proj = _model_project(Path(d))
+        (proj.root / "sources" / "deeper").mkdir(parents=True)
+        captured = {}
+
+        def fake_eval(project, bundle, **kw):
+            captured["root"] = project.root
+            return {"n": 1}
+
+        monkeypatch.setattr(cli, "evaluate_model", fake_eval)
+        for where in (proj.root, proj.root / "sources" / "deeper"):    # the root, or anywhere below it
+            with _cwd(where):
+                code, out = _run(["info"])
+                assert code == 0 and "task:          reach" in out
+                assert _run(["models"])[1].startswith("m1")
+                assert _run(["videos"]) == (0, "no videos registered\n")
+                code, out = _run(["evaluate", "m1"])                   # model id alone, no project
+                assert code == 0 and Path(captured["root"]).resolve() == proj.root.resolve()
+
+        with _cwd(d):                                                   # outside every project
+            code, out = _run(["info"])
+            assert code == 2 and "no project.toml in" in out and "give the project's path" in out
+            code, out = _run(["extract", "--all"])
+            assert code == 2 and "no project.toml in" in out
+            assert _run(["info", str(proj.root)])[0] == 0              # an explicit path still works
+            assert _run(["info", str(proj.root / "project.toml")])[0] == 0
+        with _cwd(proj.root):
+            code, out = _run(["evaluate", "nope"])
+            assert code == 2 and "no model.toml" in out and "models in" in out and "m1" in out
+
+
+def test_add_video_takes_its_first_argument_as_a_video_inside_a_project():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        ws.Project.create(d / "ws", task="reach", bodyparts=["snout"])
+        a, b = _make_videos(d / "raw", ["a.mp4", "b.mp4"])
+        (c,) = _make_videos(d / "more", ["c.mp4"])
+        with _cwd(d / "ws"):
+            assert _run(["add-video", str(a), str(b)])[0] == 0          # no project: both are videos
+            assert _run(["add-video", str(d / "more")])[0] == 0         # a folder of videos, not a project
+        assert ws.Project.open(d / "ws").videos() == ["a", "b", "c"]
+        (e,) = _make_videos(d / "raw", ["e.mp4"])
+        assert _run(["add-video", str(d / "ws"), str(e)])[0] == 0       # the explicit form is unchanged
+        assert "e" in ws.Project.open(d / "ws").videos()
+
+
+def test_apply_uses_the_project_around_the_current_directory(monkeypatch):
+    with tempfile.TemporaryDirectory() as d:
+        proj = _model_project(Path(d))
+        seen = {}
+
+        def fake_apply_videos(bundle, videos, out_root, **kw):
+            seen["bundle"] = bundle.card.model_id
+            return {str(v): Path(out_root) / "pose.parquet" for v in videos}
+
+        monkeypatch.setattr(cli, "apply_to_videos", fake_apply_videos)
+        video = Path(d) / "clip1.mp4"
+        video.write_bytes(b"v")
+        with _cwd(proj.root):
+            code, out = _run(["apply", str(video), "--model-id", "m1"])
+            assert code == 0 and seen["bundle"] == "m1" and len(proj.runs("analyze")) == 1
+            code, out = _run(["apply", str(video)])
+            assert code == 2 and "--model-id is required" in out
+
+
 # ------------------------------------------------------------------ smoke runner
 def test_label_dispatch_reads_sidecar(monkeypatch):
     from deeplabcut.workspace import label_video

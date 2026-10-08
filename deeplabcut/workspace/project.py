@@ -110,6 +110,22 @@ class Project:
         config = ProjectConfig.from_dict(read_manifest(layout.project_toml))
         return cls(layout.root, config)
 
+    @classmethod
+    def find(cls, start: str | Path = ".") -> Project:
+        """Open the project ``start`` is in: the nearest folder at or above it with a ``project.toml``.
+
+        Raises:
+            FileNotFoundError: if neither ``start`` nor any folder above it holds one.
+        """
+        here = Path(start).resolve()
+        for folder in (here, *here.parents):
+            if (folder / "project.toml").is_file():
+                return cls.open(folder)
+        raise FileNotFoundError(
+            f"no project.toml in {here} or any folder above it; "
+            "run this inside a project, or give the project's path"
+        )
+
     def save_config(self) -> None:
         """Persist the in-memory :class:`ProjectConfig` back to ``project.toml``."""
         write_manifest(self.layout.project_toml, self.config.to_dict())

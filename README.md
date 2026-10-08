@@ -91,6 +91,8 @@ fdlc apply --project ws --model-id <model_id> reduced-640x360/*.mp4 --labeled-vi
 fdlc extract --from-run latest --project ws -n 10   # more frames, the model's markers proposed
 ```
 
+Inside a project folder the project argument can be left out: `cd ws && fdlc train`.
+
 - [docs/workspace_cli.md](docs/workspace_cli.md) -- the guide: every command, the
   choices it involves, and troubleshooting.
 - [scripts/reduce_videos.sh](scripts/reduce_videos.sh) -- makes the downscaled

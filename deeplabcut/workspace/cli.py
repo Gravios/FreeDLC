@@ -141,7 +141,7 @@ def cmd_list_skeletons(args) -> int:
 
 def cmd_export_skeleton(args) -> int:
     try:
-        project = Project.open(args.project)
+        project = _open_project(args.project)
     except (FileNotFoundError, ValueError) as err:
         print(err)
         return 2
@@ -176,11 +176,46 @@ def cmd_export_skeleton(args) -> int:
     return 0
 
 
-def _open_project(project_arg: str):
-    root = Path(project_arg)
-    if root.name == "project.toml":
-        root = root.parent
-    return Project.open(root)
+class NotFound(FileNotFoundError):
+    """A project or model named on the command line (or implied by the cwd) does not exist."""
+
+
+#: help text of every project argument that may be left out
+PROJECT_HELP = ("project root or its project.toml (default: the project the current directory is in, "
+                "found by looking upwards)")
+
+
+def _is_project(path) -> bool:
+    """True if ``path`` is a project root or its ``project.toml``."""
+    path = Path(path)
+    return (path / "project.toml").is_file() or (path.name == "project.toml" and path.is_file())
+
+
+def _open_project(project_arg: str | None):
+    """The project named by a CLI argument, or, when it is left out, the one around the cwd."""
+    try:
+        if project_arg is None:
+            return Project.find(Path.cwd())
+        root = Path(project_arg)
+        if root.name == "project.toml":
+            root = root.parent
+        return Project.open(root)
+    except FileNotFoundError as err:
+        raise NotFound(str(err)) from err
+
+
+def _open_bundle(project, model_id: str):
+    """The model bundle ``model_id`` of ``project``, naming the project's models when it is not there."""
+    try:
+        return ModelBundle.from_project(project, model_id)
+    except FileNotFoundError as err:
+        have = ", ".join(project.models()) or "none yet"
+        raise NotFound(f"{err}\nmodels in {project.root}: {have}") from err
+
+
+def _project_flag(args) -> str:
+    """`` --project <p>`` for a printed command, or nothing when it was found from the cwd."""
+    return f" --project {args.project}" if getattr(args, "project", None) else ""
 
 
 def _extract_one(args_tuple):
@@ -308,7 +343,7 @@ def _extract_from_run(args) -> int:
         return 2
     print(f"done: {added} frame(s) added to {len(touched)} video(s)")
     if touched:
-        print(f"label them with `fdlc annotate <video> --project {args.project}` (e.g. {touched[0]})")
+        print(f"label them with `fdlc annotate <video>{_project_flag(args)}` (e.g. {touched[0]})")
         if not args.no_propose:
             print("in napari the proposals are their own layer (machinelabels-iter0, drawn as x): "
                   "correct them there and save that layer to add them to your labels")
@@ -438,7 +473,7 @@ def cmd_migrate(args) -> int:
 
 
 def cmd_info(args) -> int:
-    project = Project.open(args.project)
+    project = _open_project(args.project)
     c = project.config
     print(f"task:          {c.task}")
     print(f"experimenters: {', '.join(c.experimenters) or '-'}")
@@ -456,7 +491,7 @@ def cmd_info(args) -> int:
 
 
 def cmd_models(args) -> int:
-    project = Project.open(args.project)
+    project = _open_project(args.project)
     for model_id in project.models():
         card = ModelBundle.from_project(project, model_id).card
         parts = [model_id, card.architecture, "top-down" if card.top_down else "bottom-up"]
@@ -471,8 +506,11 @@ def cmd_models(args) -> int:
 def cmd_add_video(args) -> int:
     from . import ids
 
+    if args.project is not None and not _is_project(args.project):
+        # `fdlc add-video a.mp4 b.mp4` inside a project: the first argument is a video too
+        args.videos, args.project = [args.project, *args.videos], None
     try:
-        project = Project.open(args.project)
+        project = _open_project(args.project)
     except (FileNotFoundError, ValueError) as err:
         print(err)
         return 2
@@ -633,7 +671,7 @@ def _video_row(project, vid: str) -> tuple[list[str], list[str]]:
 
 def cmd_videos(args) -> int:
     """List every video id with what is registered, labeled and extracted under it."""
-    project = Project.open(args.project)
+    project = _open_project(args.project)
     if args.register:
         code = _register_processed(project, args.register, args.link)
         if code:
@@ -666,10 +704,10 @@ def cmd_apply(args) -> int:
         bundle = ModelBundle.open(args.model)
     else:
         if not args.model_id:
-            print("--model-id is required with --project")
+            print("--model-id is required with a project (or give --model <bundle>)")
             return 2
-        project = Project.open(args.project)
-        bundle = ModelBundle.from_project(project, args.model_id)
+        project = _open_project(args.project)
+        bundle = _open_bundle(project, args.model_id)
 
     # skeleton edges: from the bundle (drop-in) else the project (project mode)
     skeleton = list(bundle.card.skeleton)
@@ -724,8 +762,8 @@ def cmd_label(args) -> int:
         if not args.model_id:
             print("--model-id is required with --project")
             return 2
-        project = Project.open(args.project)
-        bundle = ModelBundle.from_project(project, args.model_id)
+        project = _open_project(args.project)
+        bundle = _open_bundle(project, args.model_id)
         bodyparts = list(bundle.card.bodyparts)
         skeleton = list(bundle.card.skeleton) or list(project.config.skeleton)
         source = shown(bundle.path / "model.toml")
@@ -785,7 +823,7 @@ def cmd_export(args) -> int:
 
 
 def cmd_train(args) -> int:
-    project = Project.open(args.project)
+    project = _open_project(args.project)
     config = TrainConfig(net_type=args.net, epochs=args.epochs, batch_size=args.batch_size,
                          detector_epochs=args.detector_epochs, device=args.device,
                          train_fraction=args.train_fraction, seed=args.seed, frames=args.frames)
@@ -800,8 +838,8 @@ def cmd_train(args) -> int:
 
 
 def cmd_evaluate(args) -> int:
-    project = Project.open(args.project)
-    bundle = ModelBundle.from_project(project, args.model_id)
+    project = _open_project(args.project)
+    bundle = _open_bundle(project, args.model_id)
     try:
         metrics = evaluate_model(project, bundle, videos=args.videos or None,
                                  pcutoff=args.pcutoff, pck_threshold=args.pck, frames=args.frames)
@@ -843,7 +881,7 @@ def build_parser() -> argparse.ArgumentParser:
     q.set_defaults(func=cmd_list_skeletons)
 
     p = sub.add_parser("export-skeleton", help="export a project's skeleton as a named config")
-    p.add_argument("project", help="workspace project root")
+    p.add_argument("project", nargs="?", default=None, help=PROJECT_HELP)
     p.add_argument("--name", help="config name (default: the project's task)")
     p.add_argument("--out", default=".fdlc/skeletons", help="output directory (default: .fdlc/skeletons)")
     p.add_argument("--description", default="", help="description recorded in the config")
@@ -863,15 +901,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_migrate)
 
     p = sub.add_parser("info", help="summarize a workspace project")
-    p.add_argument("project")
+    p.add_argument("project", nargs="?", default=None, help=PROJECT_HELP)
     p.set_defaults(func=cmd_info)
 
     p = sub.add_parser("models", help="list model bundles")
-    p.add_argument("project")
+    p.add_argument("project", nargs="?", default=None, help=PROJECT_HELP)
     p.set_defaults(func=cmd_models)
 
     p = sub.add_parser("add-video", help="register one or more source videos (files, folders, or globs)")
-    p.add_argument("project")
+    p.add_argument("project", nargs="?", default=None, help=PROJECT_HELP)
     p.add_argument("videos", nargs="+", help="video files, directories, or glob patterns")
     p.add_argument("--link", choices=["symlink", "copy", "reference"], default="symlink",
                    help="how to materialize media: symlink (default), copy, or reference (record path only)")
@@ -888,7 +926,7 @@ def build_parser() -> argparse.ArgumentParser:
                        help="extract annotation frames from a registered video")
     p.add_argument("video", nargs="?", help="registered video id, or a path whose name matches one")
     p.add_argument("--all", action="store_true", help="extract from every registered (original) video")
-    p.add_argument("--project", default=".", help="project root or project.toml (default: current directory)")
+    p.add_argument("--project", default=None, help=PROJECT_HELP)
     p.add_argument("-n", type=int, default=20, dest="n", help="number of frames to extract (default: 20)")
     p.add_argument("--mode", choices=("uniform", "kmeans"), default="uniform",
                    help="uniform (evenly spaced) or kmeans (content-clustered)")
@@ -920,14 +958,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("annotate", help="open the napari annotator on a video (extracts frames if needed)")
     p.add_argument("video", help="registered video id, or a path whose name matches one")
-    p.add_argument("--project", default=".", help="project root or project.toml (default: current directory)")
+    p.add_argument("--project", default=None, help=PROJECT_HELP)
     p.add_argument("-n", type=int, default=20, dest="n", help="frames to extract if none exist yet (default: 20)")
     p.add_argument("--mode", choices=("uniform", "kmeans"), default="uniform",
                    help="frame-selection mode when extracting (default: uniform)")
     p.set_defaults(func=cmd_annotate)
 
     p = sub.add_parser("videos", help="list video ids with their registered videos, labels and frames")
-    p.add_argument("project")
+    p.add_argument("project", nargs="?", default=None, help=PROJECT_HELP)
     p.add_argument("--register", metavar="DIR",
                    help="make the videos in DIR the processed videos of the originals their names match; "
                         "nothing is changed unless every video in DIR matches one")
@@ -937,8 +975,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("apply", help="label one or more videos (files, folders, or globs)")
     p.add_argument("videos", nargs="+", help="video files, directories, or glob patterns")
-    source = p.add_mutually_exclusive_group(required=True)
-    source.add_argument("--project", help="workspace project (use with --model-id)")
+    source = p.add_mutually_exclusive_group()
+    source.add_argument("--project", help="workspace project, used with --model-id (default: the project "
+                                          "the current directory is in)")
     source.add_argument("--model", help="a model bundle directory (project-less drop-in)")
     p.add_argument("--model-id", dest="model_id", help="model id inside --project")
     p.add_argument("--out", help="output root directory")
@@ -988,7 +1027,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_export)
 
     p = sub.add_parser("train", help="train a model natively from annotations (requires torch)")
-    p.add_argument("project")
+    p.add_argument("project", nargs="?", default=None, help=PROJECT_HELP)
     p.add_argument("--net", default="resnet_50")
     p.add_argument("--epochs", type=int, default=200)
     p.add_argument("--batch-size", type=int, default=8, dest="batch_size")
@@ -1004,7 +1043,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_train)
 
     p = sub.add_parser("evaluate", help="evaluate a model against annotations")
-    p.add_argument("project")
+    p.add_argument("project", nargs="?", default=None, help=PROJECT_HELP)
     p.add_argument("model_id")
     p.add_argument("--videos", nargs="*")
     p.add_argument("--pcutoff", type=float, default=0.6)
@@ -1023,7 +1062,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 2
     with _file_report(getattr(args, "verbose", False)):
-        return args.func(args)
+        try:
+            return args.func(args)
+        except NotFound as err:
+            print(err)
+            return 2
 
 
 @contextlib.contextmanager
