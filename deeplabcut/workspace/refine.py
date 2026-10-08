@@ -28,11 +28,10 @@ they widen the coverage of the labeled set at little cost.
 :func:`video_id_for` maps that video back to a registered id. Frame numbers are
 shared by an original and its processed video, so a run on either serves.
 
-:func:`propose_labels` writes a run's predicted positions for new frames into the
-annotation file napari opens, in original pixels, so they come up as markers to
-adjust rather than to place. ``labels.parquet`` is not touched: the proposals
-become labels when annotate closes and ingests that file -- as they are left in it
-then, adjusted or not.
+:func:`propose_labels` stages a run's predicted positions for new frames as napari
+machine labels (``machinelabels-iter0.h5``), in original pixels, so they come up as
+markers to adjust rather than to place. They are kept apart from the labels: napari
+merges them in only when their layer is saved.
 """
 from __future__ import annotations
 
@@ -226,49 +225,44 @@ def video_size(project, video_id: str, video: Path | None, kind: str | None) -> 
 
 def propose_labels(
     project, video_id: str, poses, frames: dict[str, int], *, scale: tuple[float, float],
-    min_likelihood: float,
+    min_likelihood: float, scorer: str = "fdlc",
 ) -> tuple[Path, int]:
-    """Put a run's predicted positions for ``frames`` into the annotation file napari opens.
+    """Stage a run's predicted positions for ``frames`` as machine labels for napari.
 
     ``frames`` maps a frame file name to its frame number in ``poses`` (a run's
     long-form pose DataFrame). Positions are multiplied by ``scale`` -- run-video
     pixels to original pixels, which the annotator shows -- and a marker below
-    ``min_likelihood`` is left unplaced. Frames that already hold a label are left
-    as they are.
+    ``min_likelihood`` is left unplaced; each keeps its likelihood. Frames that
+    already hold a label are skipped.
 
-    The file is the staged ``CollectedData_<scorer>.h5`` annotate opens. When there
-    is none yet, it is started from ``labels.parquet`` so that existing labels are
-    kept; a file that is replaced is kept beside it as ``.bak``. Returns the file and
-    the number of markers placed.
+    The file is ``machinelabels-iter0.h5`` beside the staged ``CollectedData``.
+    napari shows it as a layer of its own and merges it into the labels only when
+    that layer is saved; neither the labels nor ``labels.parquet`` are touched here.
+    Proposals already in the file for other frames are kept, and the previous file
+    is kept as ``.bak``. Returns the file and the number of markers placed.
     """
     import shutil
 
     import numpy as np
     import pandas as pd
 
-    from .annotate import _scorer
+    from .annotate import MACHINE_LABELS, labeled_images
     from .annotations import (
         collected_data_to_long_df,
         find_collected_data,
         long_df_to_collected_data,
         read_collected_data,
+        write_collected_data,
     )
 
     dataset_dir = project.layout.staging_dataset_dir(video_id)
-    dataset_dir.mkdir(parents=True, exist_ok=True)
-    existing = find_collected_data(dataset_dir)
-    if existing is not None:
-        labels = collected_data_to_long_df(read_collected_data(existing))
-        scorer = existing.stem[len("CollectedData_"):]
+    staged = find_collected_data(dataset_dir)
+    if staged is not None:  # what the annotator shows, saved or not yet ingested
+        labeled = labeled_images(collected_data_to_long_df(read_collected_data(staged)))
+    elif project.layout.labels_parquet(video_id).is_file():
+        labeled = labeled_images(pd.read_parquet(project.layout.labels_parquet(video_id)))
     else:
-        scorer = _scorer(project)
-        labels = pd.DataFrame(columns=["image", "individual", "bodypart", "x", "y"])
-        parquet = project.layout.labels_parquet(video_id)
-        if parquet.is_file():
-            labels = pd.read_parquet(parquet)
-            sx, sy = project.labels_scale_to(video_id, "original")  # stored space -> what napari shows
-            labels = labels.assign(x=labels["x"] * sx, y=labels["y"] * sy)
-    labeled = set(labels.loc[labels["x"].notna() & labels["y"].notna(), "image"])
+        labeled = set()
 
     by_frame = {f: name for name, f in frames.items() if name not in labeled}
     picked = poses[poses["frame"].isin(list(by_frame))].copy()
@@ -276,29 +270,22 @@ def propose_labels(
         slots = [i for i in dict.fromkeys(picked["individual"]) if i != SINGLE]
         rename = dict(zip(slots, project.config.individuals, strict=False))
         picked["individual"] = picked["individual"].map(lambda i: rename.get(i, i))
-    keep = picked["likelihood"] >= min_likelihood
-    picked.loc[~keep, ["x", "y"]] = np.nan
+    picked.loc[picked["likelihood"] < min_likelihood, ["x", "y"]] = np.nan
     proposals = pd.DataFrame({
         "image": picked["frame"].map(by_frame),
         "individual": picked["individual"],
         "bodypart": picked["bodypart"],
         "x": picked["x"] * scale[0],
         "y": picked["y"] * scale[1],
+        "likelihood": picked["likelihood"],
     })
     placed = int((proposals["x"].notna() & proposals["y"].notna()).sum())
-    # frames with nothing placed still go in, so napari lists them with the others
-    merged = pd.concat([labels[~labels["image"].isin(list(by_frame.values()))], proposals],
-                       ignore_index=True)
-    wide = long_df_to_collected_data(merged, project, scorer=scorer, dataset=video_id)
 
-    target = existing if existing is not None and existing.suffix == ".h5" else \
-        dataset_dir / f"CollectedData_{scorer}.h5"
+    target = dataset_dir / MACHINE_LABELS
     if target.exists():
+        earlier = collected_data_to_long_df(read_collected_data(target), likelihood=True)
+        proposals = pd.concat([earlier[~earlier["image"].isin(list(by_frame.values()))], proposals],
+                              ignore_index=True)
         shutil.copy2(target, target.with_name(target.name + ".bak"))
-    partial = target.with_name(target.stem + ".part.h5")
-    wide.to_hdf(partial, key="df_with_missing", mode="w")
-    partial.replace(target)
-    csv = target.with_suffix(".csv")
-    if csv.exists():  # keep a CSV napari may have written in step with the h5
-        wide.to_csv(csv)
-    return target, placed
+    wide = long_df_to_collected_data(proposals, project, scorer=scorer, dataset=video_id, likelihood=True)
+    return write_collected_data(wide, target), placed

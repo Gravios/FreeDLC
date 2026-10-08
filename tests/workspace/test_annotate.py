@@ -877,60 +877,124 @@ def test_collected_data_round_trips_through_long_form():
         assert wide[("me", "m2", "paw", "x")].iloc[0] == 5.0 and wide[("me", "single", "led", "y")].iloc[0] == 8.0
 
 
-def test_extract_from_run_proposes_the_runs_positions_for_adjusting():
-    from deeplabcut.workspace.annotations import (
-        collected_data_to_long_df,
-        find_collected_data,
-        read_collected_data,
-        write_labels_parquet,
-    )
+def _labels_session(proj, vid):
+    """Earlier labels on img0005.png, stored in labels.parquet (original pixels)."""
+    from deeplabcut.workspace.annotations import write_labels_parquet
     from deeplabcut.workspace.manifest import write_manifest
     from deeplabcut.workspace.schema import LabelsRecord
+
+    labeled = pd.DataFrame({"image": "img0005.png", "individual": "single", "bodypart": BODYPARTS,
+                            "x": [11.0, 12.0], "y": [13.0, 14.0]})
+    write_labels_parquet(labeled, proj.layout.labels_parquet(vid))
+    write_manifest(proj.layout.labels_toml(vid), LabelsRecord(video_id=vid, space="original").to_dict())
+    return labeled
+
+
+def test_extract_from_run_proposes_the_runs_positions_as_machine_labels():
+    from deeplabcut.workspace.annotations import collected_data_to_long_df, find_collected_data, read_collected_data
 
     with tempfile.TemporaryDirectory() as d:
         d = Path(d)
         proj, vid = _project_with_pair(d, orig=(160, 120), proc=(80, 60))
         frames_mod.extract_frames(proj, vid, n=4)                           # 5, 15, 25, 35
-        labeled = pd.DataFrame({"image": "img0005.png", "individual": "single", "bodypart": BODYPARTS,
-                                "x": [11.0, 12.0], "y": [13.0, 14.0]})
-        write_labels_parquet(labeled, proj.layout.labels_parquet(vid))      # labels from an earlier session
-        write_manifest(proj.layout.labels_toml(vid), LabelsRecord(video_id=vid, space="original").to_dict())
+        labeled = _labels_session(proj, vid)
         likelihood = [(0.9, 0.9)] * 40
         likelihood[10:20] = [(0.7, 0.1)] * 10                              # one marker drawn
         likelihood[12] = (0.65, 0.05)                                       # ...and the least sure
         likelihood[27] = (0.99, 0.98)                                       # the surest frame
         _analyze_run(proj, proj.video_media_files(vid, "processed")[0], likelihood)   # 80x60 px
         ws_root = str(d / "ws")
+        dataset = proj.layout.staging_dataset_dir(vid)
 
         code, out = _run(["extract", "--from-run", "latest", "--project", ws_root, "-n", "2", "--max-shown", "1"])
         assert code == 0, out
         # 15 is already extracted, so 9 frames qualify as unsure; 5, 25, 35 likewise leave 27 confident
         assert f"{vid}: added 1 unsure (of 9, showing 1) and 1 confident (of 27, showing 2)" in out
-        staged = find_collected_data(proj.layout.staging_dataset_dir(vid))
-        assert staged is not None and "proposed 3 marker(s) for adjusting" in out
-        long = collected_data_to_long_df(read_collected_data(staged)).set_index(["image", "bodypart"])
-        assert long.loc[("img0005.png", "snout"), "x"] == 11.0              # earlier labels kept
+        assert "proposed 3 marker(s) as machine labels" in out and "machinelabels-iter0" in out
+        machine = dataset / ann.MACHINE_LABELS
+        assert machine.is_file()
+        assert find_collected_data(dataset) is None                         # the labels are not touched
+        assert pd.read_parquet(proj.layout.labels_parquet(vid)).equals(labeled)
+
+        wide = read_collected_data(machine)
+        assert list(wide.columns.get_level_values("coords").unique()) == ["x", "y", "likelihood"]
+        long = collected_data_to_long_df(wide, likelihood=True).set_index(["image", "bodypart"])
+        assert set(long.index.get_level_values("image")) == {"img0012.png", "img0027.png"}
         assert long.loc[("img0027.png", "snout"), "x"] == (10 + 27) * 2     # processed -> original px
         assert long.loc[("img0027.png", "paw"), "y"] == 10.0
-        assert long.loc[("img0012.png", "snout"), "x"] == (10 + 12) * 2
+        assert long.loc[("img0027.png", "paw"), "likelihood"] == 0.98
         assert np.isnan(long.loc[("img0012.png", "paw"), "x"])              # below pcutoff: not placed
-        assert pd.read_parquet(proj.layout.labels_parquet(vid)).equals(labeled)   # not labels yet
+        assert long.loc[("img0012.png", "paw"), "likelihood"] == 0.05       # ...its likelihood kept
 
-        # a second pass keeps the first one's file, and --propose-all places everything
+        # a second pass keeps the first one's proposals; --propose-all places everything
         code, out = _run(["extract", "--from-run", "latest", "--project", ws_root, "-n", "2",
                           "--max-shown", "1", "--propose-all"])
         assert code == 0, out
-        assert staged.with_name(staged.name + ".bak").is_file()
-        long = collected_data_to_long_df(read_collected_data(staged)).set_index(["image", "bodypart"])
+        assert machine.with_name(machine.name + ".bak").is_file()
+        long = collected_data_to_long_df(read_collected_data(machine), likelihood=True).set_index(
+            ["image", "bodypart"])
+        images = set(long.index.get_level_values("image"))
+        new = sorted(images - {"img0012.png", "img0027.png"})
+        assert len(images) == 4 and not long.loc[new, "x"].isna().any()
         assert np.isnan(long.loc[("img0012.png", "paw"), "x"])              # first pass left as it was
-        new = sorted(set(long.index.get_level_values("image")) - {"img0005.png", "img0012.png", "img0027.png"})
-        assert len(new) == 2 and not long.loc[new, "x"].isna().any()
 
-        # closing the annotator takes the proposals as they are
-        ann.annotate_video(proj, vid, _launch=lambda config, dataset: None)
-        labels = pd.read_parquet(proj.layout.labels_parquet(vid))
-        assert {"img0005.png", "img0012.png", "img0027.png", *new} == set(labels["image"])
-        assert proj.labels_record(vid).space == "original"
+        # closing the annotator without accepting them changes nothing...
+        ann.annotate_video(proj, vid, _launch=lambda config, dataset_dir: None)
+        assert set(pd.read_parquet(proj.layout.labels_parquet(vid))["image"]) == {"img0005.png"}
+        assert machine.is_file()
+
+        # ...saving the machine layer (napari merges it into CollectedData) accepts them
+        def accept(config, dataset_dir, frames=("img0012.png", "img0027.png")):
+            from deeplabcut.workspace.annotations import long_df_to_collected_data, write_collected_data
+
+            gt = collected_data_to_long_df(read_collected_data(find_collected_data(dataset_dir)))
+            proposed = collected_data_to_long_df(read_collected_data(dataset_dir / ann.MACHINE_LABELS))
+            merged = pd.concat([gt, proposed[proposed["image"].isin(frames)]], ignore_index=True)
+            write_collected_data(long_df_to_collected_data(merged, proj, scorer="labeler", dataset=vid),
+                                 find_collected_data(dataset_dir))
+
+        ann.annotate_video(proj, vid, _launch=accept)
+        assert set(pd.read_parquet(proj.layout.labels_parquet(vid))["image"]) == {
+            "img0005.png", "img0012.png", "img0027.png"}
+        left = collected_data_to_long_df(read_collected_data(machine))
+        assert set(left["image"]) == set(new)                               # accepted frames dropped
+
+        ann.annotate_video(proj, vid, _launch=lambda c, ds: accept(c, ds, frames=tuple(new)))
+        assert not machine.exists()                                         # nothing left to propose
+
+
+def test_staging_restores_labels_the_annotator_has_no_copy_of():
+    """Opening napari on a staging without CollectedData must not lose labels.parquet."""
+    from deeplabcut.workspace.annotations import collected_data_to_long_df, find_collected_data, read_collected_data
+
+    with tempfile.TemporaryDirectory() as d:
+        proj, vid = _project_with_pair(Path(d), orig=(160, 120), proc=(80, 60))
+        frames_mod.extract_frames(proj, vid, n=4)
+        labeled = _labels_session(proj, vid)
+        dataset = proj.layout.staging_dataset_dir(vid)
+        assert not dataset.exists()                                         # e.g. a migrated project
+
+        ann.annotate_video(proj, vid, _launch=lambda config, dataset_dir: None)
+        staged = find_collected_data(dataset)
+        assert staged is not None
+        long = collected_data_to_long_df(read_collected_data(staged)).set_index(["image", "bodypart"])
+        assert long.loc[("img0005.png", "paw"), "x"] == 12.0
+        assert pd.read_parquet(proj.layout.labels_parquet(vid))[["image", "bodypart", "x", "y"]].equals(
+            labeled[["image", "bodypart", "x", "y"]])
+
+        # labels stored in processed pixels by an older version come back in original pixels
+        from deeplabcut.workspace.annotations import write_labels_parquet
+        from deeplabcut.workspace.manifest import write_manifest
+        from deeplabcut.workspace.schema import LabelsRecord
+
+        staged.unlink()
+        write_labels_parquet(labeled.assign(x=labeled["x"] / 2, y=labeled["y"] / 2),
+                             proj.layout.labels_parquet(vid))
+        write_manifest(proj.layout.labels_toml(vid),
+                       LabelsRecord(video_id=vid, space="processed", scale_x=0.5, scale_y=0.5).to_dict())
+        ann.stage_annotation_project(proj, vid, frames_mod.extract_frames(proj, vid), scorer="labeler")
+        long = collected_data_to_long_df(read_collected_data(find_collected_data(dataset)))
+        assert long.set_index(["image", "bodypart"]).loc[("img0005.png", "paw"), "x"] == 12.0
 
 
 if __name__ == "__main__":

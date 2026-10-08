@@ -210,7 +210,9 @@ The annotator itself only ever sees `.annotate/<video_id>/`, a staging directory
 holding a synthesized `config.yaml`, symlinks to the frames, and the
 `CollectedData_*` file napari saves. Frames are only viewed through it; nothing
 is copied or linked back from it into `sources/`. It is kept between sessions so
-earlier labels reload.
+earlier labels reload. If it has no `CollectedData_*` file -- a migrated project,
+or after `.annotate/` was deleted -- one is written from `labels.parquet` before
+napari opens, so the existing labels are shown and kept.
 
 ## Train
 
@@ -418,7 +420,7 @@ fdlc train ws
 ```
 
 `--from-run` reads the poses of an analyze run and adds up to `-n` frames to each
-video's frame set, with the model's marker positions already placed in them:
+video's frame set, with the model's marker positions proposed for them:
 
 - **unsure** frames, in which few or none of the markers would be drawn in the
   labeled video -- what the model handles worst, and where the labeled set lacks
@@ -448,23 +450,35 @@ on either video serves, since both have the same frame numbers.
 
 ### The proposed markers
 
-The run's positions are written into the annotation file the annotator opens,
-`.annotate/<video>/labeled-data/<video>/CollectedData_<scorer>.h5`, scaled to
-original pixels, so they come up in napari as markers to move rather than to
-place. Only markers that reach the pcutoff -- those the labeled video draws --
-are placed; `--propose-all` places every marker, and `--no-propose` none.
-Existing labels in that file are kept (it is started from `labels.parquet` if
-there is none yet), and the previous file is kept beside it as `.bak`.
+The run's positions are staged as DeepLabCut *machine labels*,
+`.annotate/<video>/labeled-data/<video>/machinelabels-iter0.h5`, scaled to original
+pixels and with their likelihoods. Only markers that reach the pcutoff -- those
+the labeled video draws -- are placed; `--propose-all` places every marker, and
+`--no-propose` none. Proposals already staged for other frames are kept, and the
+previous file is kept beside it as `.bak`. Your labels and `labels.parquet` are
+not touched.
 
-`labels.parquet` is not changed. The proposals become labels when `annotate`
-closes and reads that file -- **as they are then, adjusted or not**. Move the
-markers that are wrong and delete those you cannot place before you close it;
-a proposal left untouched is trained on as if you had placed it.
+In napari the proposals are a layer of their own, `machinelabels-iter0`, drawn as
+`x` beside your labels layer (`CollectedData_<scorer>`). They become labels only
+when you save **that layer**: napari then merges it into your labels -- adding its
+points, never deleting a label you already have -- and `annotate` reads them in
+when you close the window. So:
+
+1. select the `machinelabels-iter0` layer and go through every proposed frame:
+   move the markers that are wrong, delete those you cannot place, place the
+   missing ones;
+2. save that layer (Ctrl+S); every frame in it is added to your labels, so do
+   this only once you have checked them all;
+3. close the window.
+
+Closing without saving the machine layer leaves the proposals where they are, as
+proposals, for the next session. Frames that hold labels after a session are
+dropped from the proposals file, and it is removed once none are left.
 
 ```text
 run 20261008-094012-3fa2c1, pcutoff 0.6: per video, up to 5 frame(s) showing at most 5 of 15 marker(s) and 5 showing the most
 session1: added 5 unsure (of 1312, showing 0-4) and 5 confident (of 80211, showing 15) -> ws/sources/annotations/session1/frames/original
-  proposed 87 marker(s) for adjusting -> ws/.annotate/session1/labeled-data/session1/CollectedData_gravio.h5
+  proposed 87 marker(s) as machine labels -> ws/.annotate/session1/labeled-data/session1/machinelabels-iter0.h5
 ```
 
 Every individual's markers count towards the total, so in a multi-animal

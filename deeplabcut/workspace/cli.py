@@ -245,6 +245,7 @@ def _extract_from_run(args) -> int:
     n_markers = len(project.config.bodyparts) + len(project.config.unique_bodyparts)
     max_shown = args.max_shown if args.max_shown is not None else n_markers // 3
     n_low = args.n - n_best
+    proposer = f"fdlc-{run.manifest().model_id or run.run_id}"  # scorer of the machine labels
     print(f"run {run.run_id}, pcutoff {pcutoff:g}: per video, up to {n_low} frame(s) showing at most "
           f"{max_shown} of {n_markers} marker(s) and {n_best} showing the most")
 
@@ -294,12 +295,13 @@ def _extract_from_run(args) -> int:
         scale = (original[0] / size[0], original[1] / size[1])
         try:
             target, placed = refine.propose_labels(
-                project, vid, df, names, scale=scale, min_likelihood=0.0 if args.propose_all else pcutoff)
+                project, vid, df, names, scale=scale, min_likelihood=0.0 if args.propose_all else pcutoff,
+                scorer=proposer)
         except (ValueError, OSError, ImportError) as err:  # ImportError: no pytables for the .h5
             print(f"  no markers proposed: {err}")
             failures += 1
             continue
-        print(f"  proposed {placed} marker(s) for adjusting -> {target}")
+        print(f"  proposed {placed} marker(s) as machine labels -> {target}")
 
     if only is not None and only not in matched:
         print(f"run {run.run_id} has no poses for {only}")
@@ -308,8 +310,8 @@ def _extract_from_run(args) -> int:
     if touched:
         print(f"label them with `fdlc annotate <video> --project {args.project}` (e.g. {touched[0]})")
         if not args.no_propose:
-            print("proposed markers become labels as they are when annotate closes: "
-                  "move the wrong ones, delete those you cannot place")
+            print("in napari the proposals are their own layer (machinelabels-iter0, drawn as x): "
+                  "correct them there and save that layer to add them to your labels")
     return 2 if failures else 0
 
 
@@ -409,7 +411,7 @@ def cmd_annotate(args) -> int:
         print(err)
         return 2
     except ImportError:
-        print("napari is required to annotate; install the annotator: pip install napari-deeplabcut")
+        print("napari is required to annotate; install napari-freedlc (see the README's Install section)")
         return 2
     labels = project.layout.labels_parquet(video_id)
     if labels.is_file():
@@ -901,7 +903,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--from-run", dest="from_run", metavar="RUN",
                    help="add -n frames per video from an analyze run (id, unique prefix, 'latest' or "
                         "directory): --best of the frames it was surest of, the rest from those showing at "
-                        "most --max-shown markers; its positions are proposed in the annotation file")
+                        "most --max-shown markers; its positions are proposed as napari machine labels")
     p.add_argument("--best", type=int, default=None, metavar="K",
                    help="with --from-run: how many of the -n are confident frames (default: half, rounded down)")
     p.add_argument("--no-propose", action="store_true", dest="no_propose",

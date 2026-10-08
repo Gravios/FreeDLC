@@ -31,6 +31,7 @@ __all__ = [
     "read_collected_data",
     "collected_data_to_long_df",
     "long_df_to_collected_data",
+    "write_collected_data",
     "write_labels_parquet",
     "copy_frames",
     "find_collected_data",
@@ -79,11 +80,13 @@ def read_collected_data(path: str | Path):
     raise ValueError(f"unsupported annotation file: {path}")
 
 
-def collected_data_to_long_df(df):
+def collected_data_to_long_df(df, *, likelihood: bool = False):
     """Convert a wide CollectedData DataFrame to tidy long form.
 
     Returns a DataFrame with columns ``[image, individual, bodypart, x, y]``,
-    preserving bodypart/individual order. The scorer level is dropped.
+    preserving bodypart/individual order. The scorer level is dropped. With
+    ``likelihood`` a ``likelihood`` column is added too (NaN where the file has
+    none), as in DLC's ``machinelabels`` files.
     """
     import numpy as np
     import pandas as pd
@@ -102,59 +105,83 @@ def collected_data_to_long_df(df):
         individual = fields.get(ind_name, SINGLE_INDIVIDUAL) if ind_name else SINGLE_INDIVIDUAL
         bodypart = fields[bpt_name]
         coord = fields[coord_name]
-        if coord in ("x", "y"):
+        if coord in ("x", "y", "likelihood"):
             groups.setdefault((individual, bodypart), {})[coord] = col
 
     n = len(df)
     nan = np.full(n, np.nan)
     parts = []
     for (individual, bodypart), coords in groups.items():
-        x = df[coords["x"]].to_numpy() if "x" in coords else nan
-        y = df[coords["y"]].to_numpy() if "y" in coords else nan
-        parts.append(pd.DataFrame({"image": images, "individual": individual,
-                                   "bodypart": bodypart, "x": x, "y": y}))
+        part = {"image": images, "individual": individual, "bodypart": bodypart,
+                "x": df[coords["x"]].to_numpy() if "x" in coords else nan,
+                "y": df[coords["y"]].to_numpy() if "y" in coords else nan}
+        if likelihood:
+            part["likelihood"] = df[coords["likelihood"]].to_numpy() if "likelihood" in coords else nan
+        parts.append(pd.DataFrame(part))
+    columns = ["image", "individual", "bodypart", "x", "y"] + (["likelihood"] if likelihood else [])
     if not parts:
-        return pd.DataFrame(columns=["image", "individual", "bodypart", "x", "y"])
-    return pd.concat(parts, ignore_index=True)[["image", "individual", "bodypart", "x", "y"]]
+        return pd.DataFrame(columns=columns)
+    return pd.concat(parts, ignore_index=True)[columns]
 
 
-def long_df_to_collected_data(long, project, *, scorer: str, dataset: str):
+def long_df_to_collected_data(long, project, *, scorer: str, dataset: str, likelihood: bool = False):
     """The wide ``CollectedData`` DataFrame napari opens, from long-form labels.
 
     The inverse of :func:`collected_data_to_long_df`. Columns follow the project's
     markers -- ``scorer/bodyparts/coords``, or ``scorer/individuals/bodyparts/coords``
     for a multi-animal project, whose unique bodyparts sit under the ``single``
     individual -- and the index is DLC's ``("labeled-data", dataset, image)``. Images
-    come in sorted order; a marker without a position is NaN.
+    come in sorted order; a marker without a position is NaN. With ``likelihood``
+    the coords are ``x, y, likelihood``, taken from ``long["likelihood"]`` -- the
+    layout of DLC's ``machinelabels`` files.
     """
     import numpy as np
     import pandas as pd
 
     cfg = project.config
+    coords = ("x", "y", "likelihood") if likelihood else ("x", "y")
     if cfg.multi_animal:
         slots = [(ind, bp) for ind in cfg.individuals for bp in cfg.bodyparts]
         slots += [(SINGLE_INDIVIDUAL, bp) for bp in cfg.unique_bodyparts]
         columns = pd.MultiIndex.from_tuples(
-            [(scorer, ind, bp, c) for ind, bp in slots for c in ("x", "y")],
+            [(scorer, ind, bp, c) for ind, bp in slots for c in coords],
             names=["scorer", "individuals", "bodyparts", "coords"],
         )
     else:
         slots = [(SINGLE_INDIVIDUAL, bp) for bp in [*cfg.bodyparts, *cfg.unique_bodyparts]]
         columns = pd.MultiIndex.from_tuples(
-            [(scorer, bp, c) for _, bp in slots for c in ("x", "y")],
+            [(scorer, bp, c) for _, bp in slots for c in coords],
             names=["scorer", "bodyparts", "coords"],
         )
     images = sorted(dict.fromkeys(long["image"].tolist()))
     row = {name: i for i, name in enumerate(images)}
-    col = {slot: 2 * i for i, slot in enumerate(slots)}
+    width = len(coords)
+    col = {slot: width * i for i, slot in enumerate(slots)}
     values = np.full((len(images), len(columns)), np.nan)
-    for image, individual, bodypart, x, y in long[["image", "individual", "bodypart", "x", "y"]].itertuples(
-            index=False):
+    for entry in long[["image", "individual", "bodypart", *coords]].itertuples(index=False):
+        image, individual, bodypart, *numbers = entry
         key = (individual if cfg.multi_animal else SINGLE_INDIVIDUAL, bodypart)
         if key in col:
-            values[row[image], col[key]:col[key] + 2] = (x, y)
+            values[row[image], col[key]:col[key] + width] = numbers
     index = pd.MultiIndex.from_tuples([("labeled-data", dataset, name) for name in images])
     return pd.DataFrame(values, index=index, columns=columns)
+
+
+def write_collected_data(wide, path: str | Path) -> Path:
+    """Write a wide CollectedData-shaped DataFrame to ``path`` (.h5) without a torn file.
+
+    It is written beside the target and moved into place; a CSV of the same name
+    that napari may have written is rewritten to match.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(path.stem + ".part.h5")
+    wide.to_hdf(partial, key="df_with_missing", mode="w")
+    partial.replace(path)
+    csv = path.with_suffix(".csv")
+    if csv.exists():
+        wide.to_csv(csv)
+    return path
 
 
 def write_labels_parquet(df, path: str | Path) -> Path:

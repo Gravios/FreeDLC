@@ -18,6 +18,18 @@ Data flows one way through the staging tree: frames are *viewed* through it and 
 are *read* out of it. The frames stay where extraction put them; nothing is ever linked
 or copied back from the staging view into ``sources/``.
 
+napari shows existing labels from the staged ``CollectedData_*`` file, and what it
+saves there replaces ``labels.parquet`` when the window closes. A staging tree without
+that file -- a migrated project, or a deleted ``.annotate/`` -- would therefore open
+with no labels and lose them on the next save, so staging first writes the file from
+``labels.parquet`` (:func:`restore_collected_data`).
+
+A model's proposed positions (``fdlc extract --from-run``) are staged as
+``machinelabels-iter0.h5``. napari shows that file as a layer of its own and merges it
+into ``CollectedData`` only when that layer is saved, so a proposal is never taken for
+a label unless the annotator accepts it. Frames that hold labels after a session are
+dropped from the file (:func:`prune_machine_labels`).
+
 The staging tree persists (it is not a temp dir), so if napari or the ingest step fails
 the raw labels are still recoverable and re-running annotate re-ingests them. napari is
 imported lazily inside :func:`launch_napari`, so the rest of this module -- and the CLI --
@@ -30,7 +42,7 @@ import logging
 from pathlib import Path
 
 from . import ids
-from .annotations import find_collected_data, ingest_video_annotations
+from .annotations import _image_name, find_collected_data, ingest_video_annotations
 from .frames import extract_frames
 from .layout import Layout
 from .util import materialize
@@ -39,6 +51,9 @@ log = logging.getLogger(__name__)
 
 __all__ = [
     "STAGING_DIRNAME",
+    "MACHINE_LABELS",
+    "restore_collected_data",
+    "prune_machine_labels",
     "resolve_video_id",
     "synthesize_config",
     "stage_annotation_project",
@@ -47,6 +62,9 @@ __all__ = [
 ]
 
 STAGING_DIRNAME = Layout.STAGING_DIRNAME
+
+#: the staged file of a model's proposed positions (DLC's name for machine predictions)
+MACHINE_LABELS = "machinelabels-iter0.h5"
 
 DEFAULT_DOTSIZE = 6
 DEFAULT_PCUTOFF = 0.6
@@ -97,6 +115,61 @@ def _scorer(project) -> str:
     return "labeler"
 
 
+def labeled_images(long) -> set[str]:
+    """Image names in long-form labels that hold at least one placed marker."""
+    return set(long.loc[long["x"].notna() & long["y"].notna(), "image"])
+
+
+def restore_collected_data(project, video_id: str, dataset_dir: Path, *, scorer: str) -> Path | None:
+    """Write ``labels.parquet`` into the staging as ``CollectedData_<scorer>.h5`` if it has none.
+
+    The labels are put in original pixels, which is what the annotator shows. Returns
+    the file written, or ``None`` when the staging already has a CollectedData file or
+    there are no labels.
+
+    Raises:
+        ValueError: if the stored labels cannot be put in original pixels.
+    """
+    import pandas as pd
+
+    from .annotations import long_df_to_collected_data, write_collected_data
+
+    parquet = project.layout.labels_parquet(video_id)
+    if find_collected_data(dataset_dir) is not None or not parquet.is_file():
+        return None
+    labels = pd.read_parquet(parquet)
+    sx, sy = project.labels_scale_to(video_id, "original")
+    labels = labels.assign(x=labels["x"] * sx, y=labels["y"] * sy)
+    wide = long_df_to_collected_data(labels, project, scorer=scorer, dataset=video_id)
+    path = write_collected_data(wide, dataset_dir / f"CollectedData_{scorer}.h5")
+    log.warning("%s: the annotator had no copy of the labels; wrote %d labeled frame(s) to %s",
+                video_id, len(labeled_images(labels)), path)
+    return path
+
+
+def prune_machine_labels(dataset_dir: Path, labeled: set[str]) -> int:
+    """Drop the frames in ``labeled`` from the staged proposals; return how many went.
+
+    The file is removed once no frame is left in it.
+    """
+    from .annotations import read_collected_data, write_collected_data
+
+    path = Path(dataset_dir) / MACHINE_LABELS
+    if not path.is_file():
+        return 0
+    wide = read_collected_data(path)
+    names = [_image_name(k) for k in wide.index]
+    keep = [name not in labeled for name in names]
+    dropped = len(names) - sum(keep)
+    if not dropped:
+        return 0
+    if not any(keep):
+        path.unlink()
+    else:
+        write_collected_data(wide[keep], path)
+    return dropped
+
+
 def stage_annotation_project(project, video_id: str, frames: list[Path], *, scorer: str) -> tuple[Path, Path]:
     """Build the DLC-shaped staging tree napari opens; return ``(config_path, dataset_dir)``.
 
@@ -105,7 +178,8 @@ def stage_annotation_project(project, video_id: str, frames: list[Path], *, scor
     link is checked against its frame and re-made if it is missing, dangling or points
     elsewhere, and links to frames no longer in ``frames`` (dropped by a re-extraction)
     are removed. Only symlinks are ever pruned -- any ``CollectedData_*`` napari
-    previously wrote there is left in place so existing labels reload.
+    previously wrote there is left in place so existing labels reload, and when there
+    is none, one is written from ``labels.parquet`` (:func:`restore_collected_data`).
     """
     import yaml
 
@@ -118,6 +192,7 @@ def stage_annotation_project(project, video_id: str, frames: list[Path], *, scor
             staged.unlink()
     for frame in frames:
         materialize(frame, dataset_dir / Path(frame).name, "symlink")
+    restore_collected_data(project, video_id, dataset_dir, scorer=scorer)
 
     config_path = project.layout.staging_config(video_id)
     with config_path.open("w", encoding="utf-8") as fh:
@@ -183,4 +258,8 @@ def annotate_video(
     n_images = len(dict.fromkeys(long["image"].tolist()))
     log.info("ingested %d annotated frame(s) in original pixels -> %s",
              n_images, project.layout.labels_parquet(video_id))
+    accepted = prune_machine_labels(dataset_dir, labeled_images(long))
+    if accepted:
+        log.info("%d frame(s) now labeled were dropped from the proposals in %s",
+                 accepted, dataset_dir / MACHINE_LABELS)
     return video_id
