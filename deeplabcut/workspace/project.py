@@ -342,9 +342,9 @@ class Project:
             raise ValueError(
                 f"cannot use the {frames} frames for {len(problems)} video(s):\n  "
                 + "\n  ".join(problems)
-                + "\n`dlc-ws videos <project>` shows what is registered and labeled under each id"
+                + "\n`fdlc videos <project>` shows what is registered and labeled under each id"
                 + "\nregister the missing counterpart "
-                "(`dlc-ws add-video <project> <video> --processed --video-id <id>`) "
+                "(`fdlc add-video <project> <video> --processed --video-id <id>`) "
                 f"or choose `--frames {other}`"
             )
 

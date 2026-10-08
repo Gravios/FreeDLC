@@ -227,7 +227,7 @@ def test_videos_table_shows_pairing_labels_and_problems():
         code, out = _run(["train", str(proj.root), "--epochs", "1"])
         assert code == 2
         assert "small-192x108: its labels are in original pixels and no original video is registered" in out
-        assert "dlc-ws videos" in out
+        assert "fdlc videos" in out
         assert proj.runs("train") == []
 
 
@@ -266,7 +266,7 @@ def test_videos_register_pairs_a_folder_with_the_originals():
         (c,) = _make_videos(other, ["Session_1-triplet.mp4"])
         code, out = _run(["videos", str(proj.root), "--register", str(other), "--link", "copy"])
         assert code == 0, out
-        assert "re-read them with `dlc-ws extract --all --match-original`" in out
+        assert "re-read them with `fdlc extract --all --match-original`" in out
         now = proj.video_media_files("session-1", "processed")
         assert len(now) == 1 and not now[0].is_symlink() and now[0].read_bytes() == c.read_bytes()
         assert a.read_bytes() == b"fake video"
@@ -328,7 +328,7 @@ def test_videos_notes_processed_frames_and_counts_that_no_longer_fit():
         notes = [line for line in out.splitlines() if line.startswith("  !")]
         assert len(notes) == 2, out
         assert ("! stale: processed frames are 192x108 but the processed video is 640x360 "
-                "(run `dlc-ws extract stale --match-original`)") in out
+                "(run `fdlc extract stale --match-original`)") in out
         assert "! short: processed video has 90 frames, the original 100" in out
 
 

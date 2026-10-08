@@ -68,7 +68,7 @@ def resolve_video_id(project, video: str) -> str:
         return candidate
     raise FileNotFoundError(
         f"no registered video matches {video!r} (looked for id {video!r} and {candidate!r}); "
-        f"run `dlc-ws add-video` first"
+        f"run `fdlc add-video` first"
     )
 
 

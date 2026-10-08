@@ -1,7 +1,7 @@
 #
 # FreeDLC workspace layer
 #
-"""``dlc-ws`` -- a command-line interface over the workspace.
+"""``fdlc`` -- a command-line interface over the workspace.
 
 Thin wrappers around the workspace API: ``create``, ``list``,
 ``export-skeleton``, ``migrate``, ``info``, ``models``, ``add-video``, ``videos``,
@@ -306,7 +306,7 @@ def _extract_from_run(args) -> int:
         return 2
     print(f"done: {added} frame(s) added to {len(touched)} video(s)")
     if touched:
-        print(f"label them with `dlc-ws annotate <video> --project {args.project}` (e.g. {touched[0]})")
+        print(f"label them with `fdlc annotate <video> --project {args.project}` (e.g. {touched[0]})")
         if not args.no_propose:
             print("proposed markers become labels as they are when annotate closes: "
                   "move the wrong ones, delete those you cannot place")
@@ -344,7 +344,7 @@ def cmd_extract(args) -> int:
         return 2
 
     if not video_ids:
-        print("no registered videos to extract from; run `dlc-ws add-video` first")
+        print("no registered videos to extract from; run `fdlc add-video` first")
         return 2
     if args.all and args.match_original:
         # nothing to match for a video without a processed counterpart
@@ -353,7 +353,7 @@ def cmd_extract(args) -> int:
         if unpaired:
             print(f"skipping {len(unpaired)} video(s) with no processed video (e.g. {unpaired[0]})")
         if not video_ids:
-            print("no video has a processed video to match; see `dlc-ws videos --register`")
+            print("no video has a processed video to match; see `fdlc videos --register`")
             return 2
     done = "matched to the original" if args.match_original else "extracted"
 
@@ -574,7 +574,7 @@ def _register_processed(project, directory: str, link: str) -> int:
         print(f"{len(left)} original(s) have no video there and keep what they had (e.g. {left[0]})")
     if any(any(project.layout.frames_dir(vid, "processed").glob("*.png")) for vid in pairs):
         print("the processed frames on disk were read from the previous videos; "
-              "re-read them with `dlc-ws extract --all --match-original`")
+              "re-read them with `fdlc extract --all --match-original`")
     return 0
 
 
@@ -593,7 +593,7 @@ def _video_row(project, vid: str) -> tuple[list[str], list[str]]:
         entries = sorted(d.glob("*.png")) if d.is_dir() else []
         broken = sum(1 for f in entries if not f.is_file())
         if broken:
-            problems.append(f"{broken} {kind} frame(s) are broken links (run `dlc-ws extract {vid}`)")
+            problems.append(f"{broken} {kind} frame(s) are broken links (run `fdlc extract {vid}`)")
         return str(len(entries) - broken)
 
     def stale_frames() -> None:
@@ -604,7 +604,7 @@ def _video_row(project, vid: str) -> tuple[list[str], list[str]]:
         if dims and rec.width and rec.height and dims != (rec.width, rec.height):
             problems.append(
                 f"processed frames are {dims[0]}x{dims[1]} but the processed video is {rec.width}x{rec.height} "
-                f"(run `dlc-ws extract {vid} --match-original`)"
+                f"(run `fdlc extract {vid} --match-original`)"
             )
         n_orig = project.video_record(vid, "original").n_frames if project.has_video(vid, "original") else None
         if n_orig and rec.n_frames and n_orig != rec.n_frames:
@@ -811,7 +811,7 @@ def cmd_evaluate(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="dlc-ws", description="FreeDLC workspace CLI")
+    parser = argparse.ArgumentParser(prog="fdlc", description="FreeDLC workspace CLI")
     sub = parser.add_subparsers(dest="command")
 
     p = sub.add_parser("create", help="create a new workspace project")
@@ -821,7 +821,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="keypoint names to track (or use --skeleton-config)")
     p.add_argument("--skeleton-config", dest="skeleton_config", metavar="NAME",
                    help="take the markers and edges from an installed skeleton config, or a path to one "
-                        "(see: dlc-ws list skeletons)")
+                        "(see: fdlc list skeletons)")
     p.add_argument("--experimenters", nargs="+", default=[], metavar="NAME")
     p.add_argument("--multi-animal", action="store_true", dest="multi_animal")
     p.add_argument("--individuals", nargs="+", default=[], metavar="NAME",

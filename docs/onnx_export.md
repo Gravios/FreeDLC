@@ -21,7 +21,7 @@ the full torch + torchvision + DLC stack to run it. An ONNX bundle would:
 
 Two seams, mirroring what already exists for the torch path:
 
-1. **Export** — a new `ModelBundle.export_onnx()` and a `dlc-ws export` command.
+1. **Export** — a new `ModelBundle.export_onnx()` and a `fdlc export` command.
    It writes `pose.onnx` (and `detector.onnx` for top-down) next to the snapshots
    and records their names on the `ModelCard`.
 2. **Inference** — an `OnnxPoseRunner` / `OnnxDetectorRunner` that
@@ -35,7 +35,7 @@ ModelCard:  + pose_onnx: str | None      + detector_onnx: str | None
 ModelBundle: + export_onnx(opset=18, dynamic=True)
              + build_pose_runner(..., backend="torch"|"onnx")
 apply:       unchanged (runner is an interface)
-cli:         + dlc-ws export <bundle> [--onnx] [--opset 18]
+cli:         + fdlc export <bundle> [--onnx] [--opset 18]
 ```
 
 ## Export path (sketch)
@@ -137,7 +137,7 @@ parity checks above are the ones that matter and they need torch + onnxruntime.
 
 ## Suggested increments
 
-1. `ModelCard.pose_onnx` field + `dlc-ws export --onnx` writing `pose.onnx`
+1. `ModelCard.pose_onnx` field + `fdlc export --onnx` writing `pose.onnx`
    (pose-only), plumbing tests with mocks.
 2. `OnnxPoseRunner` + `build_pose_runner(backend="onnx")`, reusing the numpy
    heatmap decoder; parity test vs torch on real crops.

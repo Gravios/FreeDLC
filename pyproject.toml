@@ -101,6 +101,8 @@ modelzoo = [ "huggingface-hub" ]
 wandb = [ "wandb" ]
 [project.scripts]
 dlc = "deeplabcut.__main__:main"
+fdlc = "deeplabcut.workspace.cli:main"
+# the command's earlier name, kept so existing scripts keep working
 dlc-ws = "deeplabcut.workspace.cli:main"
 [project.urls]
 Homepage = "https://www.deeplabcut.org"

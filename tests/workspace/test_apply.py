@@ -110,7 +110,7 @@ def test_apply_to_videos_builds_runner_once(monkeypatch):
 
 
 def test_apply_file_report_names_the_files_involved(monkeypatch):
-    """`dlc-ws apply --verbose`: the model files used, each video (and what a link
+    """`fdlc apply --verbose`: the model files used, each video (and what a link
     resolves to), and every file written -- and nothing at all without the flag."""
     import contextlib
     import io

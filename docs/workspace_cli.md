@@ -1,9 +1,9 @@
-# Workspace projects from the command line (`dlc-ws`)
+# Workspace projects from the command line (`fdlc`)
 
 A *workspace* is FreeDLC's project layout: a `project.toml` plus four directories
 (`sources/`, `models/`, `runs/`, `derived/`). It replaces the legacy
 `config.yaml` + `labeled-data/` + `dlc-models-pytorch/` tree, and is driven from
-the `dlc-ws` command.
+the `fdlc` command. (`dlc-ws`, its earlier name, still works.)
 
 This page walks the pipeline from an empty directory to a trained, evaluated
 model, and then covers the cases that need a decision: which resolution to train
@@ -15,7 +15,7 @@ create -> add-video -> extract -> annotate -> train -> evaluate -> apply
 ```
 
 Every command has `--help`. Note that the project is given in two ways: most
-commands take it as the first positional argument (`dlc-ws train <project>`),
+commands take it as the first positional argument (`fdlc train <project>`),
 while `extract` and `annotate` take the *video* positionally and the
 project as `--project` (default: the current directory).
 
@@ -52,16 +52,16 @@ file name, so a downscaled file with a different name must be given the
 original's id explicitly:
 
 ```bash
-dlc-ws create ws --task reach --bodyparts snout paw tail --experimenters gravio
+fdlc create ws --task reach --bodyparts snout paw tail --experimenters gravio
 
-dlc-ws add-video ws session1.mp4
-dlc-ws add-video ws session1-320x240.mp4 --processed --video-id session1
+fdlc add-video ws session1.mp4
+fdlc add-video ws session1-320x240.mp4 --processed --video-id session1
 ```
 
 Without `--video-id`, the second file would be registered as a separate video
 `session1-320x240` and nothing would connect it to `session1`.
 
-`dlc-ws videos <project>` shows, for every id, what is registered, labeled and
+`fdlc videos <project>` shows, for every id, what is registered, labeled and
 extracted under it, and points out what does not fit together:
 
 ```text
@@ -94,8 +94,8 @@ Processed videos usually come as a folder made from the originals -- `reduced/`,
 originals by name, so no `--video-id` is needed:
 
 ```bash
-dlc-ws videos ws --register /data/video/reduced-640x360
-dlc-ws extract --all --project ws --match-original
+fdlc videos ws --register /data/video/reduced-640x360
+fdlc extract --all --project ws --match-original
 ```
 
 A file belongs to an original when its name is the original's name, optionally
@@ -114,7 +114,7 @@ The frames in `frames/processed/` were read from the previous videos, so run
 points out frames whose size no longer fits:
 
 ```text
-  ! session1: processed frames are 192x108 but the processed video is 640x360 (run `dlc-ws extract session1 --match-original`)
+  ! session1: processed frames are 192x108 but the processed video is 640x360 (run `fdlc extract session1 --match-original`)
 ```
 
 It also notes a processed video whose frame count differs from its original's.
@@ -125,8 +125,8 @@ on the wrong moment; re-encode it without dropping or duplicating frames
 ## Extract frames
 
 ```bash
-dlc-ws extract session1 --project ws -n 20
-dlc-ws extract --all --project ws -n 20 --mode kmeans -j 4
+fdlc extract session1 --project ws -n 20
+fdlc extract --all --project ws -n 20 --mode kmeans -j 4
 ```
 
 (`extract-frames`, the command's earlier name, still works.)
@@ -156,7 +156,7 @@ re-annotate.
 ## Annotate
 
 ```bash
-dlc-ws annotate session1 --project ws
+fdlc annotate session1 --project ws
 ```
 
 This opens the napari annotator (the `napari-freedlc` plugin) on the original
@@ -186,7 +186,7 @@ earlier labels reload.
 ## Train
 
 ```bash
-dlc-ws train ws --net resnet_50 --epochs 200 --batch-size 8 --device cuda:0
+fdlc train ws --net resnet_50 --epochs 200 --batch-size 8 --device cuda:0
 ```
 
 Training uses every video that has a `labels.parquet`.
@@ -228,7 +228,7 @@ and names each video:
 ```text
 cannot use the processed frames for 1 video(s):
   session2: no processed video is registered
-register the missing counterpart (`dlc-ws add-video <project> <video> --processed --video-id <id>`) or choose `--frames original`
+register the missing counterpart (`fdlc add-video <project> <video> --processed --video-id <id>`) or choose `--frames original`
 ```
 
 ### What a run produces
@@ -266,7 +266,7 @@ readable file are used. If some are
 not, they are left out and the run says so, per video, with the fix:
 
 ```text
-session1: 3 of 20 labeled frame(s) have no readable image in sources/annotations/session1/frames/original and are left out of training; run `dlc-ws extract session1` to restore them
+session1: 3 of 20 labeled frame(s) have no readable image in sources/annotations/session1/frames/original and are left out of training; run `fdlc extract session1` to restore them
 ```
 
 ### Seeing which files are used: `--verbose`
@@ -275,7 +275,7 @@ session1: 3 of 20 labeled frame(s) have no readable image in sources/annotations
 command reads and writes, as it gets to them:
 
 ```text
-$ dlc-ws train ws --verbose
+$ fdlc train ws --verbose
 project /data/ws
 frame set: processed
 video session1: 20 labeled frame(s)
@@ -312,14 +312,14 @@ skeleton came from, and the output.
 Images are augmented on the fly with DeepLabCut's defaults: rotation up to 30
 degrees and rescaling between 0.5x and 1.25x (applied to half the images), a
 448x448 keypoint-aware crop, Gaussian noise and motion blur. Horizontal flips
-are off. These are not yet configurable from `dlc-ws train`; the resolved
+are off. These are not yet configurable from `fdlc train`; the resolved
 settings are written to `train/pytorch_config.yaml` and printed at the start of
 the log.
 
 ## Evaluate
 
 ```bash
-dlc-ws evaluate ws <model_id>
+fdlc evaluate ws <model_id>
 ```
 
 Runs the model on the labeled frames and reports the error against the
@@ -341,7 +341,7 @@ the same miss is 2x larger in pixels on frames twice the size.
 ## Apply to videos
 
 ```bash
-dlc-ws apply --project ws --model-id <model_id> session1-320x240.mp4 --labeled-video
+fdlc apply --project ws --model-id <model_id> session1-320x240.mp4 --labeled-video
 ```
 
 `apply` runs on the video files you pass, so the resolution is your choice of
@@ -356,10 +356,10 @@ which `extract --from-run` reads (see the next section). The run records the
 ## More frames from a model's own results: `extract --from-run`
 
 ```bash
-dlc-ws apply --project ws --model-id <model_id> reduced/*.mp4 --labeled-video
-dlc-ws extract --from-run latest --project ws -n 10
-dlc-ws annotate session1 --project ws
-dlc-ws train ws
+fdlc apply --project ws --model-id <model_id> reduced/*.mp4 --labeled-video
+fdlc extract --from-run latest --project ws -n 10
+fdlc annotate session1 --project ws
+fdlc train ws
 ```
 
 `--from-run` reads the poses of an analyze run and adds up to `-n` frames to each
@@ -424,10 +424,10 @@ model numbers them.
 Register both videos under one id, annotate, train:
 
 ```bash
-dlc-ws add-video ws session1.mp4
-dlc-ws add-video ws session1-320x240.mp4 --processed --video-id session1
-dlc-ws annotate session1 --project ws
-dlc-ws train ws
+fdlc add-video ws session1.mp4
+fdlc add-video ws session1-320x240.mp4 --processed --video-id session1
+fdlc annotate session1 --project ws
+fdlc train ws
 ```
 
 You annotate on full-resolution frames; the model learns from, and is later run
@@ -436,7 +436,7 @@ on, the downscaled video.
 ### Train at the original resolution
 
 ```bash
-dlc-ws train ws --frames original
+fdlc train ws --frames original
 ```
 
 Works whether or not processed videos exist. Use it when the model will be
@@ -450,7 +450,7 @@ There are no processed frames to train on, so the
 default cannot be used. Pass the flag on every run:
 
 ```bash
-dlc-ws train ws --frames original
+fdlc train ws --frames original
 ```
 
 This is also the right command when the only videos you have are already small
@@ -460,9 +460,9 @@ on", not "high resolution".
 ### Adding a processed video after annotating
 
 ```bash
-dlc-ws add-video ws session1-320x240.mp4 --processed --video-id session1
-dlc-ws extract session1 --project ws      # fills in frames/processed/
-dlc-ws train ws
+fdlc add-video ws session1-320x240.mp4 --processed --video-id session1
+fdlc extract session1 --project ws      # fills in frames/processed/
+fdlc train ws
 ```
 
 No re-annotation is needed. `labels.toml` says the labels are in original
@@ -476,19 +476,19 @@ write it first by opening and closing the annotator **before** registering the
 processed video:
 
 ```bash
-dlc-ws annotate session1 --project ws    # save, close
+fdlc annotate session1 --project ws    # save, close
 ```
 
 ### Replacing the processed video with one of another size
 
 ```bash
-dlc-ws add-video ws session1-640x360.mp4 --processed --video-id session1 --exist-ok
-dlc-ws extract session1 --project ws --match-original
-dlc-ws train ws
+fdlc add-video ws session1-640x360.mp4 --processed --video-id session1 --exist-ok
+fdlc extract session1 --project ws --match-original
+fdlc train ws
 ```
 
-For a folder of them, `dlc-ws videos ws --register <folder>` replaces the first
-command for every video at once, followed by `dlc-ws extract --all --project ws
+For a folder of them, `fdlc videos ws --register <folder>` replaces the first
+command for every video at once, followed by `fdlc extract --all --project ws
 --match-original`.
 
 The labels need no attention: they are converted to whatever processed video is
@@ -533,7 +533,7 @@ images than the dataset holds.
 
 The default `--frames processed` needs, for every annotated video, an original
 and a processed video registered under the same id. The message names each video
-and what is missing; `dlc-ws videos <project>` shows the whole picture. Register
+and what is missing; `fdlc videos <project>` shows the whole picture. Register
 the missing counterpart under the same id (`--processed --video-id`), or train
 with `--frames original`. The usual cause is a downscaled file that was
 registered under its own id instead of the original's.
@@ -541,21 +541,21 @@ registered under its own id instead of the original's.
 ### `N of M labeled frame(s) have no readable image ... left out of training`
 
 Frame files are missing or are broken links. Run
-`dlc-ws extract <video> --project <project>` (without `--overwrite`) and
+`fdlc extract <video> --project <project>` (without `--overwrite`) and
 train again.
 
 ### Frames that are symlinks to themselves (`Too many levels of symbolic links`)
 
-Left behind by `dlc-ws annotate` in versions before the link fix, which
+Left behind by `fdlc annotate` in versions before the link fix, which
 replaced each frame with a link to itself when the annotator closed. The
-labels are intact. `dlc-ws extract` or `dlc-ws annotate` re-reads those
+labels are intact. `fdlc extract` or `fdlc annotate` re-reads those
 frames from the video at the index in their file name. Do not use
 `--overwrite`.
 
 ### napari: `No supported images were found`
 
 The staged frame links point at missing files; newer `napari-freedlc` versions
-say how many and show one. Same fix as above: re-run `dlc-ws annotate`, which
+say how many and show one. Same fix as above: re-run `fdlc annotate`, which
 restores the frames and re-makes the links.
 
 ### Training prints nothing between the dataset warnings and `trained -> ...`
@@ -565,7 +565,7 @@ An older version that attached no log handler. Per-epoch numbers are still in
 
 ### `File .../dataset/annotations/train.json does not exist`, or `analyze_images() got an unexpected keyword argument 'detector_runner'`
 
-Bugs in older versions of `dlc-ws train` and `dlc-ws evaluate`; update.
+Bugs in older versions of `fdlc train` and `fdlc evaluate`; update.
 
 ### napari-freedlc fails to import with `cannot import name 'SYMBOL_TRANSLATION_INVERTED'`
 

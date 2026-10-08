@@ -68,7 +68,7 @@ def resolve_media(project, video_id: str, kind: str = "original") -> Path:
     """
     if not project.has_video(video_id, kind):
         raise FileNotFoundError(
-            f"{kind} video {video_id!r} is not registered; run `dlc-ws add-video` first"
+            f"{kind} video {video_id!r} is not registered; run `fdlc add-video` first"
         )
     for media in project.video_media_files(video_id, kind):
         if media.is_file():  # skips a symlink whose source has moved away
@@ -322,7 +322,7 @@ def extract_frames(
         if not frames:
             raise ValueError(
                 f"none of the frames in {frames_dir} is readable and they could not be restored; "
-                f"re-run `dlc-ws extract --overwrite` for {video_id!r}"
+                f"re-run `fdlc extract --overwrite` for {video_id!r}"
             )
         return frames
 

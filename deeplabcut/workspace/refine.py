@@ -3,7 +3,7 @@
 #
 """Choose frames to label next from where an applied model is unsure.
 
-An ``analyze`` run (``dlc-ws apply --project``) leaves one ``pose.parquet`` per
+An ``analyze`` run (``fdlc apply --project``) leaves one ``pose.parquet`` per
 video, with a likelihood for every marker in every frame. A labeled video draws a
 marker only where its likelihood reaches ``pcutoff``, so a frame in which few or
 none of them do is a frame the model cannot handle yet -- and the most useful
@@ -72,7 +72,7 @@ def resolve_run(project, run: str):
     """
     runs = project.runs("analyze")
     if not runs:
-        raise ValueError("the project has no analyze runs yet; run `dlc-ws apply --project ...` first")
+        raise ValueError("the project has no analyze runs yet; run `fdlc apply --project ...` first")
     if run == "latest":
         return runs[-1]
     path = Path(run)

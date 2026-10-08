@@ -14,7 +14,7 @@ builders and forward shape, see docs/onnx_export.md):
     wraps it so ``torch.onnx.export`` sees a flat tuple of head tensors, and
     traces it.
   - ``check_onnx_parity``: exports, then asserts the onnxruntime forward matches
-    the torch forward tensor-for-tensor. This is the gate `dlc-ws export --check`
+    the torch forward tensor-for-tensor. This is the gate `fdlc export --check`
     runs on a torch box.
 
 torch / onnxruntime are imported lazily, so importing this module stays light.
@@ -127,7 +127,7 @@ def check_onnx_parity(bundle, *, opset: int = 18, atol: float = 1e-3, rtol: floa
     """Export, then assert onnxruntime matches torch on the same input. Requires torch.
 
     Returns ``{"ok": bool, "reports": {label: parity_report}}``. UNVERIFIED here --
-    this is the gate that runs on a torch box (``dlc-ws export --check``).
+    this is the gate that runs on a torch box (``fdlc export --check``).
     """
     import tempfile
 
