@@ -834,9 +834,13 @@ def cmd_export(args) -> int:
 
 def cmd_train(args) -> int:
     project = _open_project(args.project)
+    if not 0.0 <= args.rotate180 <= 1.0:
+        print(f"--rotate180 is a probability between 0 and 1, got {args.rotate180}")
+        return 2
     config = TrainConfig(net_type=args.net, epochs=args.epochs, batch_size=args.batch_size,
                          detector_epochs=args.detector_epochs, device=args.device,
-                         train_fraction=args.train_fraction, seed=args.seed, frames=args.frames)
+                         train_fraction=args.train_fraction, seed=args.seed, frames=args.frames,
+                         rotate180=args.rotate180)
     try:  # before a run is opened: a frame set the labels cannot be put on
         project.check_frames(project.annotated_videos(), config.frames)
     except ValueError as err:
@@ -1045,6 +1049,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--detector-epochs", type=int, default=0, dest="detector_epochs")
     p.add_argument("--train-fraction", type=float, default=0.95, dest="train_fraction")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--rotate180", type=float, nargs="?", const=0.5, default=0.0, metavar="P",
+                   help="turn training images by 180 degrees with probability P (default when given: 0.5) "
+                        "before the usual +-30 degree rotation; left/right markers keep their names")
     p.add_argument("--device")
     p.add_argument("--frames", choices=Layout.VIDEO_KINDS[::-1], default="processed",
                    help="frame set to train on; labels are converted into its pixel space "

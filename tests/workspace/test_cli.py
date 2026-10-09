@@ -400,6 +400,17 @@ def test_train_dispatch(monkeypatch):
         assert code == 0 and "trained -> models/trained1" in out
         assert seen == {"net": "hrnet_w32", "epochs": 3, "backend": "WorkspaceTrainBackend"}
 
+        def capture(project, config, backend, **kw):
+            seen["rotate180"] = config.rotate180
+            return _FakeBundle()
+
+        monkeypatch.setattr(cli, "train_model", capture)
+        for argv, expected in ((["--rotate180"], 0.5), (["--rotate180", "0.3"], 0.3), ([], 0.0)):
+            code, _ = _run(["train", str(proj.root), *argv])
+            assert code == 0 and seen["rotate180"] == expected
+        code, out = _run(["train", str(proj.root), "--rotate180", "1.5"])
+        assert code == 2 and "probability between 0 and 1" in out
+
 
 def test_evaluate_dispatch(monkeypatch):
     with tempfile.TemporaryDirectory() as d:

@@ -113,6 +113,9 @@ def train_in_workspace(project, run, config) -> Path:
     loader.model_cfg.runner.snapshots.save_epochs = config.save_epochs
     if config.seed is not None:
         loader.model_cfg.train_settings.seed = config.seed
+    if config.rotate180:
+        loader.model_cfg["data"]["train"]["rotate180"] = float(config.rotate180)
+        files_log.info("augmentation: half turn with probability %g", config.rotate180)
     if config.top_down and loader.model_cfg.get("detector") is not None:
         loader.model_cfg.detector.train_settings.batch_size = config.detector_batch_size
         loader.model_cfg.detector.train_settings.epochs = config.detector_epochs

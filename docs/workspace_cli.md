@@ -250,6 +250,7 @@ Training uses every video that has a `labels.parquet`.
 | `--train-fraction` | `0.95` | share of images used for training; the rest are the test set |
 | `--seed` | `0` | |
 | `--device` | auto | e.g. `cuda:0`, `cpu` |
+| `--rotate180 [P]` | off | also turn images by 180 degrees, with probability P (0.5 if not given); see Augmentation |
 
 ### Which resolution: `--frames`
 
@@ -362,9 +363,25 @@ Images are augmented on the fly with DeepLabCut's defaults: rotation up to 30
 degrees and rescaling between 0.5x and 1.25x (applied to half the images), a
 448x448 keypoint-aware crop, Gaussian noise and motion blur. Horizontal flips
 are off. Frames smaller than the crop are padded to it first, so at 640x360 a
-training image is a padded full frame and at 192x108 it is mostly padding. These are not yet configurable from `fdlc train`; the resolved
-settings are written to `train/pytorch_config.yaml` and printed at the start of
-the log.
+training image is a padded full frame and at 192x108 it is mostly padding.
+Apart from `--rotate180` below, these are not configurable from `fdlc train`;
+the defaults are written to `train/pytorch_config.yaml`.
+
+`--rotate180` adds a half turn, applied with probability P (0.5 when given
+without a value) before that rotation, so the model sees the animal at
+orientations around both 0 and 180 degrees, each varied by up to 30 degrees:
+
+```bash
+fdlc train --rotate180              # half of the images turned round
+fdlc train --rotate180 0.3          # 30 percent of them
+```
+
+A half turn is a rotation, not a mirror image, so the animal's left stays its
+left and left/right markers (head_left/head_right, hip_left/hip_right) keep their
+names. A horizontal or vertical *flip* would swap them and is not offered. The
+half turn is exact -- no interpolation, no border -- because it is done as both
+flips at once. The setting is recorded in the run's `run.toml` and in the
+`augmentation` line of the `--verbose` report.
 
 ## Evaluate
 

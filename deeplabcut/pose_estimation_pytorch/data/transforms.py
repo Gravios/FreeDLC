@@ -57,6 +57,16 @@ def build_transforms(augmentations: dict) -> A.BaseCompose:
             )
             transforms.append(A.HorizontalFlip(p=hflip_proba))
 
+    if rotate180 := augmentations.get("rotate180"):
+        # A half turn about the image centre, with probability `rotate180`, before the
+        # affine's own (small) rotation -- so orientations around 0 and 180 degrees are
+        # both seen. A half turn is a rotation, not a mirror image: an animal's left
+        # stays its left, so symmetric keypoints keep their names (unlike a flip).
+        # Done as both flips, which is exact: no interpolation and no border.
+        transforms.append(
+            A.Sequential([A.HorizontalFlip(p=1.0), A.VerticalFlip(p=1.0)], p=float(rotate180))
+        )
+
     if (affine := augmentations.get("affine")) is not None:
         scaling = affine.get("scaling")
         rotation = affine.get("rotation")

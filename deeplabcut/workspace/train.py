@@ -50,6 +50,9 @@ class TrainConfig:
     #: frame set to train on: "processed" (the resolution inference runs at) or
     #: "original"; ``None`` uses, per video, whichever its labels are stored in
     frames: str | None = "processed"
+    #: probability of turning a training image by 180 degrees before the usual +-30
+    #: degree rotation, so the model sees the animal facing both ways (0 = never)
+    rotate180: float = 0.0
     extra: dict[str, Any] = field(default_factory=dict)
 
     @property
