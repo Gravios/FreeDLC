@@ -243,8 +243,9 @@ Training uses every video that has a `labels.parquet`.
 | Option | Default | Meaning |
 |---|---|---|
 | `--frames` | `processed` | frame set to train on: `processed` or `original` |
-| `--net` | `resnet_50` | architecture |
-| `--epochs` | `200` | pose-model epochs |
+| `--net` | `resnet_50` | architecture (with `--from-model`: that model's) |
+| `--epochs` | `200` | pose-model epochs (with `--from-model`: 50) |
+| `--from-model ID` | - | start from that model's weights; see "Continuing a model" |
 | `--batch-size` | `8` | |
 | `--detector-epochs` | `0` | above 0 trains a top-down model (detector, then pose) |
 | `--train-fraction` | `0.95` | share of images used for training; the rest are the test set |
@@ -356,6 +357,36 @@ names the bundle's config and the snapshot used, each input video (with the file
 a symlink resolves to), and the pose file, record and labeled video written for
 it. For `label` it names the video, the pose file, where the marker names and
 skeleton came from, and the output.
+
+### Continuing a model
+
+```bash
+fdlc train --from-model 20261008-180121-f8c7c7              # 50 epochs
+fdlc train --from-model 20261008-180121-f8c7c7 --epochs 80 --rotate180
+```
+
+`--from-model` starts from an earlier model's weights (its default snapshot)
+instead of the ImageNet-pretrained backbone, and trains on all current
+annotations, new ones included. The result is a new model; the earlier one is
+left as it is.
+
+It is a fresh run, not a resumed one: DeepLabCut's own resume would restore the
+optimizer, the epoch counter and the learning rate, which in a finished run has
+decayed to 1e-5. Instead the run counts from epoch 1, starts at 1e-4 -- the
+middle step of the usual 5e-4 / 1e-4 / 1e-5 schedule, since the model has
+learned already -- and steps down to 1e-5 after three quarters of its epochs. The
+`--verbose` report shows the model it started from and the schedule.
+
+The earlier model must fit: the same architecture (`--net` defaults to it), the
+same markers in the same order, and the same frame set (`--frames`); a top-down
+model cannot be continued yet. Otherwise training stops before it starts, saying
+what differs.
+
+The held-out test metrics of a continued model flatter it. The train/test split
+is drawn again over all labeled frames, so some of its test frames were training
+frames of the model it started from. Use continuing to iterate quickly while
+labeling, and train from scratch for the model you report; to compare the two
+fairly, score them on frames labeled after both were trained.
 
 ### Augmentation
 

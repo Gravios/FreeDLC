@@ -177,6 +177,10 @@ def cmd_export_skeleton(args) -> int:
     return 0
 
 
+#: default epochs when continuing a model (`train --from-model`)
+FINE_TUNE_EPOCHS = 50
+
+
 class CommandError(Exception):
     """A project or model named on the command line (or implied by the cwd) cannot be used.
 
@@ -837,12 +841,22 @@ def cmd_train(args) -> int:
     if not 0.0 <= args.rotate180 <= 1.0:
         print(f"--rotate180 is a probability between 0 and 1, got {args.rotate180}")
         return 2
-    config = TrainConfig(net_type=args.net, epochs=args.epochs, batch_size=args.batch_size,
+    net, epochs = args.net, args.epochs
+    if args.from_model:  # continue a model: its architecture, and a shorter run
+        source = _open_bundle(project, args.from_model)
+        net = net or source.card.architecture
+        epochs = epochs or FINE_TUNE_EPOCHS
+    config = TrainConfig(net_type=net or "resnet_50", epochs=epochs or 200, batch_size=args.batch_size,
                          detector_epochs=args.detector_epochs, device=args.device,
                          train_fraction=args.train_fraction, seed=args.seed, frames=args.frames,
-                         rotate180=args.rotate180)
-    try:  # before a run is opened: a frame set the labels cannot be put on
+                         rotate180=args.rotate180, from_model=args.from_model)
+    try:  # before a run is opened: a frame set the labels cannot be put on, or a model that does not fit
         project.check_frames(project.annotated_videos(), config.frames)
+        if args.from_model:
+            from .native_train import check_fine_tune_source
+
+            check_fine_tune_source(source, net_type=config.net_type, bodyparts=list(project.config.bodyparts),
+                                   frames=config.frames, top_down=config.top_down)
     except ValueError as err:
         print(err)
         return 2
@@ -1043,8 +1057,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("train", help="train a model natively from annotations (requires torch)")
     p.add_argument("project", nargs="?", default=None, help=PROJECT_HELP)
-    p.add_argument("--net", default="resnet_50")
-    p.add_argument("--epochs", type=int, default=200)
+    p.add_argument("--net", default=None, help="architecture (default: resnet_50, or that of --from-model)")
+    p.add_argument("--epochs", type=int, default=None,
+                   help=f"epochs (default: 200, or {FINE_TUNE_EPOCHS} with --from-model)")
+    p.add_argument("--from-model", dest="from_model", metavar="MODEL_ID",
+                   help="start from this model's weights, with a fresh learning-rate schedule, and train on "
+                        "all current annotations; the result is a new model")
     p.add_argument("--batch-size", type=int, default=8, dest="batch_size")
     p.add_argument("--detector-epochs", type=int, default=0, dest="detector_epochs")
     p.add_argument("--train-fraction", type=float, default=0.95, dest="train_fraction")

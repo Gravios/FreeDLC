@@ -51,6 +51,74 @@ def probe_image_dims(project, video_ids, frames: str | None = None) -> dict[str,
     return dims
 
 
+#: share of a fine-tuning run spent at the starting learning rate before the last step down
+FINE_TUNE_DECAY_AT = 0.75
+
+
+def check_fine_tune_source(bundle, *, net_type: str, bodyparts: list[str], frames: str | None,
+                           top_down: bool) -> None:
+    """Refuse to start from ``bundle`` when its weights cannot fit the model being trained.
+
+    Raises:
+        ValueError: naming every mismatch -- architecture, markers (their number and
+            order fix the output layer), frame set (the resolution it learned at), or
+            a top-down model, which is not supported.
+    """
+    card = bundle.card
+    problems = []
+    if card.top_down or top_down:
+        problems.append("top-down models cannot be continued yet; train without --from-model")
+    if card.architecture != net_type:
+        problems.append(f"it is a {card.architecture} and this run trains a {net_type} (drop --net, or give "
+                        f"--net {card.architecture})")
+    if list(card.bodyparts) != list(bodyparts):
+        problems.append(f"its markers {list(card.bodyparts)} are not this project's {list(bodyparts)}")
+    if card.frames and frames and card.frames != frames:
+        problems.append(f"it learned on the {card.frames} frames and this run uses the {frames} frames "
+                        f"(add --frames {card.frames})")
+    if problems:
+        raise ValueError(f"cannot continue model {card.model_id}:\n  " + "\n  ".join(problems))
+
+
+def fine_tune_snapshot(bundle, dest: Path) -> Path:
+    """Write the weights of ``bundle``'s default snapshot to ``dest``, and nothing else.
+
+    DeepLabCut resumes from a snapshot: it restores the optimizer, the learning-rate
+    schedule and the epoch counter, so a converged model would carry on at its final,
+    decayed rate. A snapshot holding only the weights (and epoch 0) makes it start a
+    new run from them instead.
+    """
+    from deeplabcut.pose_estimation_pytorch.runners.base import attempt_snapshot_load
+
+    snapshot = attempt_snapshot_load(bundle.snapshot_path(), "cpu")
+    import torch
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    torch.save({"model": snapshot["model"], "metadata": {"epoch": 0}}, dest)
+    return dest
+
+
+def _fine_tune_schedule(model_cfg, epochs: int) -> str | None:
+    """Fit the learning-rate schedule to a fine-tuning run of ``epochs``; describe it, or None.
+
+    The default schedule steps 5e-4 -> 1e-4 -> 1e-5 at fixed epochs of a 200-epoch
+    run. A model that has learned already starts at the middle rate (1e-4) and
+    steps down to the last (1e-5) after :data:`FINE_TUNE_DECAY_AT` of the run.
+    Other schedules are left as they are.
+    """
+    runner = model_cfg["runner"]
+    scheduler = runner.get("scheduler") or {}
+    if scheduler.get("type") != "LRListScheduler":
+        return None
+    lr_list = scheduler["params"]["lr_list"]
+    start, end = float(lr_list[0][0]), float(lr_list[-1][0])
+    at = max(1, round(FINE_TUNE_DECAY_AT * epochs))
+    runner["optimizer"]["params"]["lr"] = start
+    scheduler["params"]["milestones"] = [at]
+    scheduler["params"]["lr_list"] = [[end]]
+    return f"lr {start:g}, then {end:g} from epoch {at}"
+
+
 def train_in_workspace(project, run, config) -> Path:
     """Train a model natively; returns the ``train`` dir holding the snapshots.
 
@@ -94,6 +162,18 @@ def train_in_workspace(project, run, config) -> Path:
         save=True,
     )
 
+    init_snapshot = None
+    if config.from_model:
+        from . import _snapshots
+        from .model_bundle import ModelBundle
+
+        source = ModelBundle.from_project(project, config.from_model)
+        check_fine_tune_source(source, net_type=config.net_type, bodyparts=_snapshots.read_bodyparts(pose_config_path),
+                               frames=config.frames, top_down=config.top_down)
+        init_snapshot = fine_tune_snapshot(source, train_dir / f"init-from-{source.card.model_id}.pt")
+        files_log.info("starting from model %s", shown(source.path))
+        files_log.info("  snapshot  %s (weights only)", shown(source.snapshot_path()))
+
     loader = COCOLoader(dataset_dir, model_config=pose_cfg,
                         train_json_filename=TRAIN_JSON, test_json_filename=TEST_JSON)
 
@@ -113,6 +193,8 @@ def train_in_workspace(project, run, config) -> Path:
     loader.model_cfg.runner.snapshots.save_epochs = config.save_epochs
     if config.seed is not None:
         loader.model_cfg.train_settings.seed = config.seed
+    if init_snapshot is not None and (schedule := _fine_tune_schedule(loader.model_cfg, config.epochs)):
+        files_log.info("  schedule  %s", schedule)
     if config.rotate180:
         loader.model_cfg["data"]["train"]["rotate180"] = float(config.rotate180)
         files_log.info("augmentation: half turn with probability %g", config.rotate180)
@@ -143,6 +225,7 @@ def train_in_workspace(project, run, config) -> Path:
             dlc_training.train(
                 loader=loader, run_config=loader.model_cfg, task=pose_task,
                 device=config.device, logger_config=loader.model_cfg.get("logger"),
+                snapshot_path=init_snapshot,
             )
     finally:
         destroy_file_logging()

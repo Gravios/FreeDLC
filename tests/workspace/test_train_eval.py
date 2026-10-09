@@ -290,5 +290,92 @@ def _run_smoke() -> int:
     return 0
 
 
+# --------------------------------------------------------- continuing a model
+def _card(**kw):
+    from types import SimpleNamespace
+
+    base = dict(model_id="m1", architecture="resnet_50", bodyparts=["snout", "paw"], frames="processed",
+                top_down=False)
+    return SimpleNamespace(card=SimpleNamespace(**{**base, **kw}))
+
+
+def test_fine_tune_source_must_fit_the_new_model():
+    from deeplabcut.workspace.native_train import check_fine_tune_source
+
+    ok = dict(net_type="resnet_50", bodyparts=["snout", "paw"], frames="processed", top_down=False)
+    check_fine_tune_source(_card(), **ok)                                   # fits: no error
+    for card, needle in ((_card(architecture="hrnet_w32"), "it is a hrnet_w32 and this run trains a resnet_50"),
+                         (_card(bodyparts=["paw", "snout"]), "markers ['paw', 'snout'] are not this project's"),
+                         (_card(frames="original"), "learned on the original frames"),
+                         (_card(top_down=True), "top-down models cannot be continued")):
+        try:
+            check_fine_tune_source(card, **ok)
+        except ValueError as err:
+            assert needle in str(err) and str(err).startswith("cannot continue model m1"), str(err)
+        else:
+            raise AssertionError(f"expected ValueError: {needle}")
+
+
+def test_fine_tune_schedule_starts_lower_and_steps_down_late():
+    from deeplabcut.workspace.native_train import _fine_tune_schedule
+
+    cfg = {"runner": {"optimizer": {"type": "AdamW", "params": {"lr": 5e-4}},
+                      "scheduler": {"type": "LRListScheduler",
+                                    "params": {"lr_list": [[1e-4], ["1e-05"]], "milestones": [90, 120]}}}}
+    assert _fine_tune_schedule(cfg, 50) == "lr 0.0001, then 1e-05 from epoch 38"
+    assert cfg["runner"]["optimizer"]["params"]["lr"] == 1e-4
+    assert cfg["runner"]["scheduler"]["params"] == {"lr_list": [[1e-5]], "milestones": [38]}
+    other = {"runner": {"optimizer": {"params": {"lr": 1e-3}}, "scheduler": {"type": "CosineAnnealing"}}}
+    assert _fine_tune_schedule(other, 50) is None and other["runner"]["optimizer"]["params"]["lr"] == 1e-3
+
+
+def test_train_from_model_takes_its_architecture_and_a_shorter_run():
+    from deeplabcut.workspace import cli
+
+    seen = {}
+
+    def fake_train(project, config, backend, **kw):
+        seen.update(net=config.net_type, epochs=config.epochs, from_model=config.from_model)
+        return type("B", (), {"card": type("C", (), {"model_id": "new1"})})()
+
+    real, cli.train_model = cli.train_model, fake_train
+    try:
+        _train_from_model_checks(cli, seen)
+    finally:
+        cli.train_model = real
+
+
+def _train_from_model_checks(cli, seen):
+    import contextlib
+    import io
+
+    from deeplabcut.workspace.model_bundle import ModelBundle
+
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        proj = ws.Project.create(d / "ws", task="reach", bodyparts=["snout", "paw"])
+        cfg, snap = d / "pytorch_config.yaml", d / "snapshot-050.pt"
+        cfg.write_text("net_type: hrnet_w32\nmetadata:\n  bodyparts: [snout, paw]\n")
+        snap.write_bytes(b"w")
+        ModelBundle.create(proj.layout.model_dir("m1"), pose_config_src=cfg, snapshot_src=snap,
+                           architecture="hrnet_w32", bodyparts=["snout", "paw"], model_id="m1")
+
+        def run(*argv):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                return cli.main(["train", str(proj.root), *argv]), buf.getvalue()
+
+        assert run("--from-model", "m1")[0] == 0
+        assert seen == {"net": "hrnet_w32", "epochs": 50, "from_model": "m1"}
+        assert run("--from-model", "m1", "--epochs", "30")[0] == 0 and seen["epochs"] == 30
+        assert run()[0] == 0 and seen == {"net": "resnet_50", "epochs": 200, "from_model": None}
+        code, out = run("--from-model", "nope")
+        assert code == 2 and "no model.toml" in out and "m1" in out
+        n_runs = len(proj.runs("train"))
+        code, out = run("--from-model", "m1", "--net", "resnet_50")    # refused before a run is opened
+        assert code == 2 and "it is a hrnet_w32 and this run trains a resnet_50" in out
+        assert len(proj.runs("train")) == n_runs and "net" in seen
+
+
 if __name__ == "__main__":
     raise SystemExit(_run_smoke())

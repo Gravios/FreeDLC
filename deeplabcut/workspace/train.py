@@ -53,6 +53,9 @@ class TrainConfig:
     #: probability of turning a training image by 180 degrees before the usual +-30
     #: degree rotation, so the model sees the animal facing both ways (0 = never)
     rotate180: float = 0.0
+    #: id of a model in the project to start from: its weights, with a fresh optimizer
+    #: and learning-rate schedule (see native_train.fine_tune_snapshot)
+    from_model: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     @property
