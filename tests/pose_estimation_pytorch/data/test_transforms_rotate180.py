@@ -41,3 +41,14 @@ def test_half_turn_happens_with_its_probability():
         turned += kp[0][0] > kp[1][0]
     assert 150 < turned < 250
     assert _apply({}, img, points, ["nose", "tail"])["keypoints"][0][0] == 100.0   # off unless asked for
+
+
+def test_the_training_config_accepts_rotate180():
+    """`fdlc train --rotate180` sets it on DeepLabCut's typed training config, which must have the field."""
+    from deeplabcut.pose_estimation_pytorch.config.data import DataConfig
+
+    cfg = DataConfig(train={"affine": {"p": 0.5, "rotation": 30, "scaling": [0.5, 1.25]}})
+    cfg["train"]["rotate180"] = 0.5
+    names = [type(t).__name__ for t in build_transforms(cfg["train"]).transforms]
+    assert names[:2] == ["Sequential", "Affine"]                      # the half turn comes before the affine
+    assert DataConfig(train={"rotate180": 0.25})["train"]["rotate180"] == 0.25

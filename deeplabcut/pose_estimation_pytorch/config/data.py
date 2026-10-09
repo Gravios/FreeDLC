@@ -60,6 +60,7 @@ class DataTransformationConfig(DLCBaseConfig):
         resize: Resize transformation configuration
         longest_max_size: Maximum size for longest edge
         hflip: Horizontal flip configuration
+        rotate180: Probability of turning an image by 180 degrees (before the affine)
         affine: Affine transformation configuration
         random_bbox_transform: Random bbox transformation configuration
         crop_sampling: Crop sampling configuration
@@ -79,6 +80,7 @@ class DataTransformationConfig(DLCBaseConfig):
     resize: dict | None = None
     longest_max_size: int | dict | None = None
     hflip: bool | float | dict | None = None
+    rotate180: float | None = None
     affine: dict | None = None
     random_bbox_transform: dict | None = None
     crop_sampling: dict | None = None
