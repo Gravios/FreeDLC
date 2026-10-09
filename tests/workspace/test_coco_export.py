@@ -130,6 +130,34 @@ def test_split_coco_is_deterministic_and_partitions():
     assert [im["id"] for im in train2["images"]] == [im["id"] for im in train["images"]]
 
 
+def test_split_coco_keeps_the_training_list_out_of_the_test_set():
+    import random
+
+    df = _labels([f"i{i}" for i in range(20)], ["single"], ["snout"])
+    coco = coco_export.labels_to_coco({"v1": df}, ["snout"])
+    # without a list the split is the one it always was: shuffle, the first share trains
+    images = list(coco["images"])
+    random.Random(3).shuffle(images)
+    train, _ = coco_export.split_coco(coco, train_fraction=0.8, seed=3)
+    assert {im["id"] for im in train["images"]} == {im["id"] for im in images[:16]}
+
+    keep = {f"v1/i{i}" for i in range(12)} | {"v1/gone.png"}           # a name no longer labeled is ignored
+    train, test = coco_export.split_coco(coco, train_fraction=0.8, seed=3, keep_in_train=keep)
+    names = {im["file_name"] for im in test["images"]}
+    assert len(test["images"]) == 4 and not names & keep                # same test share, none from the list
+    assert len(train["images"]) == 16
+    # more listed than the training share: every unlisted frame is tested on
+    train, test = coco_export.split_coco(coco, train_fraction=0.5, seed=3,
+                                         keep_in_train={f"v1/i{i}" for i in range(17)})
+    assert len(test["images"]) == 3 and len(train["images"]) == 17
+    try:
+        coco_export.split_coco(coco, keep_in_train={f"v1/i{i}" for i in range(20)})
+    except ValueError as err:
+        assert "all 20 labeled frame(s) are in the training list" in str(err)
+    else:
+        raise AssertionError("expected ValueError")
+
+
 def test_write_coco_json_roundtrip():
     with tempfile.TemporaryDirectory() as d:
         coco = coco_export.labels_to_coco({"v1": _labels(["i1"], ["single"], ["snout"])}, ["snout"])

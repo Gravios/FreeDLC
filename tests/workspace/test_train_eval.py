@@ -335,7 +335,8 @@ def test_train_from_model_takes_its_architecture_and_a_shorter_run():
     seen = {}
 
     def fake_train(project, config, backend, **kw):
-        seen.update(net=config.net_type, epochs=config.epochs, from_model=config.from_model)
+        seen.update(net=config.net_type, epochs=config.epochs, from_model=config.from_model,
+                    train_list=config.train_list)
         return type("B", (), {"card": type("C", (), {"model_id": "new1"})})()
 
     real, cli.train_model = cli.train_model, fake_train
@@ -357,8 +358,9 @@ def _train_from_model_checks(cli, seen):
         cfg, snap = d / "pytorch_config.yaml", d / "snapshot-050.pt"
         cfg.write_text("net_type: hrnet_w32\nmetadata:\n  bodyparts: [snout, paw]\n")
         snap.write_bytes(b"w")
-        ModelBundle.create(proj.layout.model_dir("m1"), pose_config_src=cfg, snapshot_src=snap,
-                           architecture="hrnet_w32", bodyparts=["snout", "paw"], model_id="m1")
+        m1 = ModelBundle.create(proj.layout.model_dir("m1"), pose_config_src=cfg, snapshot_src=snap,
+                                architecture="hrnet_w32", bodyparts=["snout", "paw"], model_id="m1")
+        m1.write_train_frames(["v1/img001.png"])
 
         def run(*argv):
             buf = io.StringIO()
@@ -366,15 +368,69 @@ def _train_from_model_checks(cli, seen):
                 return cli.main(["train", str(proj.root), *argv]), buf.getvalue()
 
         assert run("--from-model", "m1")[0] == 0
-        assert seen == {"net": "hrnet_w32", "epochs": 50, "from_model": "m1"}
+        assert seen == {"net": "hrnet_w32", "epochs": 50, "from_model": "m1", "train_list": None}
         assert run("--from-model", "m1", "--epochs", "30")[0] == 0 and seen["epochs"] == 30
-        assert run()[0] == 0 and seen == {"net": "resnet_50", "epochs": 200, "from_model": None}
+        assert run()[0] == 0 and seen == {"net": "resnet_50", "epochs": 200, "from_model": None, "train_list": None}
         code, out = run("--from-model", "nope")
         assert code == 2 and "no model.toml" in out and "m1" in out
         n_runs = len(proj.runs("train"))
         code, out = run("--from-model", "m1", "--net", "resnet_50")    # refused before a run is opened
         assert code == 2 and "it is a hrnet_w32 and this run trains a resnet_50" in out
         assert len(proj.runs("train")) == n_runs and "net" in seen
+
+        # a training list is checked before a run is opened too
+        good, bad = d / "keep.txt", d / "bad.txt"
+        good.write_text("# kept\nv1/img002.png\n\n")
+        bad.write_text("v1/img002.png\nimg003.png\n")
+        assert run("--train-list", str(good))[0] == 0 and seen["train_list"] == str(good.resolve())
+        for argv, needle in (((str(bad),), "line 2: 'img003.png'"), ((str(d / "none.txt"),), "does not exist")):
+            code, out = run("--train-list", *argv)
+            assert code == 2 and needle in out, out
+        m1.train_frames_path.unlink()                                  # an old model, its run gone
+        code, out = run("--from-model", "m1")
+        assert code == 2 and "does not record which frames it trained on" in out, out
+        assert len(proj.runs("train")) == n_runs
+
+
+def test_a_model_records_the_frames_it_trained_on():
+    import json
+
+    with tempfile.TemporaryDirectory() as d:
+        proj = ws.Project.create(Path(d) / "ws", task="reach", bodyparts=["snout", "paw"])
+
+        def backend(project, run, config):
+            ann = run.dir / "dataset" / "annotations"
+            ann.mkdir(parents=True)
+            (ann / "train.json").write_text(json.dumps({"images": [{"file_name": "v1/b.png"},
+                                                                   {"file_name": "v1/a.png"}]}))
+            return _fake_train_dir(run.dir / "train")
+
+        bundle = ws.train_model(proj, ws.TrainConfig(epochs=1), backend)
+        assert bundle.train_frames_path.read_text().splitlines()[1:] == ["v1/a.png", "v1/b.png"]
+        assert bundle.train_frames() == ["v1/a.png", "v1/b.png"]
+        # a model from before the file: its training run's dataset says the same
+        bundle.train_frames_path.unlink()
+        assert bundle.train_frames() is None
+        assert bundle.train_frames(proj) == ["v1/b.png", "v1/a.png"]
+
+
+def test_training_list_from_a_model_and_a_file():
+    from types import SimpleNamespace
+
+    from deeplabcut.workspace.native_train import read_frame_list, training_list
+
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        proj = ws.Project.create(d / "ws", task="reach", bodyparts=["snout", "paw"])
+        bundle = ws.ModelBundle.from_train_dir(proj.layout.model_dir("m1"), _fake_train_dir(d / "train"),
+                                               model_id="m1")
+        bundle.write_train_frames(["v1/a.png", "v1/b.png"])
+        listed = d / "list.txt"
+        listed.write_text("v2/c.png  # added by hand\nv1/a.png\n")
+        assert read_frame_list(listed) == ["v2/c.png", "v1/a.png"]
+        config = SimpleNamespace(from_model="m1", train_list=str(listed))
+        assert training_list(proj, config) == {"v1/a.png", "v1/b.png", "v2/c.png"}
+        assert training_list(proj, SimpleNamespace(from_model=None, train_list=None)) is None
 
 
 if __name__ == "__main__":

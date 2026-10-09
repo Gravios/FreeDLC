@@ -25,7 +25,22 @@ from .manifest import read_manifest, write_manifest
 from .schema import ModelCard
 from .util import code_version, materialize
 
-__all__ = ["ModelBundle"]
+__all__ = ["ModelBundle", "TRAIN_FRAMES", "dataset_train_frames"]
+
+#: file in a bundle listing the frames the model was trained on
+TRAIN_FRAMES = "train_frames.txt"
+
+
+def dataset_train_frames(run_dir: Path) -> list[str] | None:
+    """The frames (``<video_id>/<image>``) in a training run's training set, if it is still there."""
+    import json
+
+    from .coco_export import ANNOTATIONS_DIRNAME, TRAIN_JSON
+
+    path = Path(run_dir) / "dataset" / ANNOTATIONS_DIRNAME / TRAIN_JSON
+    if not path.is_file():
+        return None
+    return [im["file_name"] for im in json.loads(path.read_text())["images"]]
 
 
 def _portable_pose_config(cfg: dict) -> dict:
@@ -224,6 +239,32 @@ class ModelBundle:
         return bundle
 
     # -- paths ------------------------------------------------------------
+    @property
+    def train_frames_path(self) -> Path:
+        """``train_frames.txt``: the frames (``<video_id>/<image>``) this model was trained on."""
+        return self.path / TRAIN_FRAMES
+
+    def train_frames(self, project=None) -> list[str] | None:
+        """The frames this model was trained on, or ``None`` if that is not known.
+
+        Read from :meth:`train_frames_path`; for a model trained before that file was
+        written, from the dataset of its training run in ``project`` (the run the
+        card names).
+        """
+        if self.train_frames_path.is_file():
+            lines = (ln.split("#", 1)[0].strip() for ln in self.train_frames_path.read_text().splitlines())
+            return [ln for ln in lines if ln]
+        if project is not None and self.card.train_run_id:
+            return dataset_train_frames(project.layout.run_dir("train", self.card.train_run_id))
+        return None
+
+    def write_train_frames(self, frames) -> Path:
+        """Record the frames this model was trained on (see :meth:`train_frames`)."""
+        names = sorted(frames)
+        self.train_frames_path.write_text(
+            "# frames this model was trained on, as <video_id>/<image>\n" + "".join(f"{n}\n" for n in names))
+        return self.train_frames_path
+
     @property
     def pose_config_path(self) -> Path:
         return self.path / self.card.pose_config

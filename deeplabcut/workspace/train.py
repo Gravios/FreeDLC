@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from . import ids
-from .model_bundle import ModelBundle
+from .model_bundle import ModelBundle, dataset_train_frames
 from .util import files_log, shown
 
 __all__ = ["TrainConfig", "TrainBackend", "train_model", "WorkspaceTrainBackend"]
@@ -56,6 +56,9 @@ class TrainConfig:
     #: id of a model in the project to start from: its weights, with a fresh optimizer
     #: and learning-rate schedule (see native_train.fine_tune_snapshot)
     from_model: str | None = None
+    #: a file of frames (``<video_id>/<image>`` per line) to train on and never test on;
+    #: with ``from_model``, that model's training frames are kept in training as well
+    train_list: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -100,10 +103,15 @@ def train_model(project, config: TrainConfig, backend: TrainBackend, *,
         train_run_id=run.run_id,
         frames=config.frames,
     )
+    trained_on = dataset_train_frames(run.dir)
+    if trained_on is not None:  # which frames it learned from, so a later run can keep them out of its test set
+        bundle.write_train_frames(trained_on)
     run.finish(outputs=[f"models/{model_id}"])
     files_log.info("model bundle %s", shown(bundle.path))
     files_log.info("  card      %s", shown(bundle.path / "model.toml"))
     files_log.info("  config    %s", shown(bundle.pose_config_path))
+    if bundle.train_frames_path.is_file():
+        files_log.info("  frames    %s (the frames it trained on)", shown(bundle.train_frames_path))
     for snapshot in sorted(bundle.snapshots_dir.iterdir()):
         default = "  (default)" if snapshot.name == bundle.card.default_snapshot else ""
         files_log.info("  snapshot  %s%s", shown(snapshot), default)

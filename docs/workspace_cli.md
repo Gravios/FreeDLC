@@ -72,7 +72,7 @@ The examples on this page name the project (`ws`) so they work from anywhere.
 |     |- frames/processed/    the same frames from the processed video
 |     |- labels.parquet       the annotations
 |     '- labels.toml          which pixel space labels.parquet is in
-|- models/<model_id>/         portable model bundles (model.toml, pose.yaml, snapshots/)
+|- models/<model_id>/         portable model bundles (model.toml, pose.yaml, snapshots/, train_frames.txt)
 |- runs/<kind>/<run_id>/      one directory per train / evaluate / analyze run
 |- derived/                   reserved; nothing writes here yet
 '- .annotate/<video_id>/      staging for the annotator (see "Annotate")
@@ -245,7 +245,8 @@ Training uses every video that has a `labels.parquet`.
 | `--frames` | `processed` | frame set to train on: `processed` or `original` |
 | `--net` | `resnet_50` | architecture (with `--from-model`: that model's) |
 | `--epochs` | `200` | pose-model epochs (with `--from-model`: 50) |
-| `--from-model ID` | - | start from that model's weights; see "Continuing a model" |
+| `--from-model ID` | - | start from that model's weights, keeping the frames it trained on out of the test set; see "Continuing a model" |
+| `--train-list FILE` | - | frames to train on and never test on; see "Keeping frames out of the test set" |
 | `--batch-size` | `8` | |
 | `--detector-epochs` | `0` | above 0 trains a top-down model (detector, then pose) |
 | `--train-fraction` | `0.95` | share of images used for training; the rest are the test set |
@@ -346,6 +347,7 @@ Using 19 images and 1 for testing
 model bundle /data/ws/models/<model_id>
   card      /data/ws/models/<model_id>/model.toml
   config    /data/ws/models/<model_id>/pose.yaml
+  frames    /data/ws/models/<model_id>/train_frames.txt (the frames it trained on)
   snapshot  /data/ws/models/<model_id>/snapshots/pose-snapshot-best-190.pt  (default)
   from run  /data/ws/runs/train/<run_id>/run.toml
 trained -> models/<model_id> (processed frames)
@@ -382,11 +384,33 @@ same markers in the same order, and the same frame set (`--frames`); a top-down
 model cannot be continued yet. Otherwise training stops before it starts, saying
 what differs.
 
-The held-out test metrics of a continued model flatter it. The train/test split
-is drawn again over all labeled frames, so some of its test frames were training
-frames of the model it started from. Use continuing to iterate quickly while
-labeling, and train from scratch for the model you report; to compare the two
-fairly, score them on frames labeled after both were trained.
+The frames the earlier model trained on stay in training, so the test set is
+drawn only from frames it never saw -- the ones labeled since, and the ones it
+was tested on. Its held-out metrics are then honest about the new model. A model
+lists the frames it trained on in `models/<model_id>/train_frames.txt`; a model
+trained before that file existed is read from its training run's dataset
+(`runs/train/<run_id>/dataset/annotations/train.json`). If neither is there,
+training stops and asks for `--train-list`.
+
+### Keeping frames out of the test set
+
+```bash
+fdlc train --train-list keep.txt
+fdlc train --from-model 20261008-180121-f8c7c7 --train-list keep.txt   # both lists together
+```
+
+`--train-list` names frames that are always trained on and never tested on, one
+`<video_id>/<image>` per line, the form `train_frames.txt` uses; `#` starts a
+comment. A model's `train_frames.txt` can be given as it is: a run from scratch
+with it tests on the same pool of frames as a continued model, so the two
+compare fairly.
+
+The test set stays the usual share of all labeled frames (`--train-fraction`),
+drawn from the frames not on the list; when those are fewer, all of them are
+tested on. Without a list the split is the same as before. Training reports how
+many listed frames it keeps and how many frames the test set is drawn from, and
+stops before it starts when every labeled frame is on the list. Listed frames
+that are no longer labeled are skipped.
 
 ### Augmentation
 

@@ -849,7 +849,8 @@ def cmd_train(args) -> int:
     config = TrainConfig(net_type=net or "resnet_50", epochs=epochs or 200, batch_size=args.batch_size,
                          detector_epochs=args.detector_epochs, device=args.device,
                          train_fraction=args.train_fraction, seed=args.seed, frames=args.frames,
-                         rotate180=args.rotate180, from_model=args.from_model)
+                         rotate180=args.rotate180, from_model=args.from_model,
+                         train_list=str(Path(args.train_list).resolve()) if args.train_list else None)
     try:  # before a run is opened: a frame set the labels cannot be put on, or a model that does not fit
         project.check_frames(project.annotated_videos(), config.frames)
         if args.from_model:
@@ -857,9 +858,27 @@ def cmd_train(args) -> int:
 
             check_fine_tune_source(source, net_type=config.net_type, bodyparts=list(project.config.bodyparts),
                                    frames=config.frames, top_down=config.top_down)
+        from .native_train import training_list
+
+        keep = training_list(project, config)  # an unknown or malformed list stops here, not mid-run
     except ValueError as err:
         print(err)
         return 2
+    if keep:
+        from .evaluate import read_labels
+
+        labeled = set()
+        for vid in project.annotated_videos():
+            df = read_labels(project, vid).dropna(subset=["x", "y"])
+            labeled |= {f"{vid}/{name}" for name in df["image"].unique()}
+        fresh = len(labeled - keep)
+        if labeled and not fresh:
+            print(f"all {len(labeled)} labeled frame(s) are in the training list; "
+                  "label new frames to have something to test on")
+            return 2
+        if labeled:
+                print(f"keeping {len(labeled & keep)} frame(s) of the training list in training; "
+                  f"the test frames come from the {fresh} labeled frame(s) not on it")
     bundle = train_model(project, config, WorkspaceTrainBackend())
     print(f"trained -> models/{bundle.card.model_id} ({config.frames} frames)")
     return 0
@@ -1062,7 +1081,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"epochs (default: 200, or {FINE_TUNE_EPOCHS} with --from-model)")
     p.add_argument("--from-model", dest="from_model", metavar="MODEL_ID",
                    help="start from this model's weights, with a fresh learning-rate schedule, and train on "
-                        "all current annotations; the result is a new model")
+                        "all current annotations; the frames it trained on stay in training, never tested on; "
+                        "the result is a new model")
+    p.add_argument("--train-list", dest="train_list", metavar="FILE",
+                   help="frames to train on and never test on: <video_id>/<image> per line (a model's "
+                        "train_frames.txt has this form)")
     p.add_argument("--batch-size", type=int, default=8, dest="batch_size")
     p.add_argument("--detector-epochs", type=int, default=0, dest="detector_epochs")
     p.add_argument("--train-fraction", type=float, default=0.95, dest="train_fraction")

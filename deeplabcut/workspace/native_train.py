@@ -119,6 +119,58 @@ def _fine_tune_schedule(model_cfg, epochs: int) -> str | None:
     return f"lr {start:g}, then {end:g} from epoch {at}"
 
 
+def read_frame_list(path) -> list[str]:
+    """Frames named in a training-list file: ``<video_id>/<image>`` per line, ``#`` comments.
+
+    Raises:
+        ValueError: if the file is missing or a line is not of that form.
+    """
+    if not Path(path).is_file():
+        raise ValueError(f"training list {path} does not exist")
+    names, bad = [], []
+    for number, line in enumerate(Path(path).read_text().splitlines(), 1):
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.count("/") != 1 or not all(line.split("/")):
+            bad.append(f"line {number}: {line!r}")
+        names.append(line)
+    if bad:
+        raise ValueError(f"{path}: expected <video_id>/<image> per line, e.g. session1/img000123.png:\n  "
+                         + "\n  ".join(bad[:5]))
+    return names
+
+
+def training_list(project, config, *, log: bool = False) -> set[str] | None:
+    """The frames this run must train on and not test on, or ``None`` for an ordinary split.
+
+    The frames ``config.from_model`` was trained on, and those in ``config.train_list``;
+    with ``log``, where they came from is logged.
+
+    Raises:
+        ValueError: if ``from_model`` does not say which frames it was trained on, or
+            the training list is malformed.
+    """
+    from .model_bundle import ModelBundle
+    from .util import files_log, shown
+
+    keep: set[str] = set()
+    if config.from_model:
+        frames = ModelBundle.from_project(project, config.from_model).train_frames(project)
+        if frames is None:
+            raise ValueError(f"model {config.from_model} does not record which frames it trained on (no "
+                             "train_frames.txt, and its training run is gone); give them with --train-list")
+        keep |= set(frames)
+        if log:
+            files_log.info("training list: %d frame(s) model %s trained on", len(frames), config.from_model)
+    if config.train_list:
+        listed = read_frame_list(config.train_list)
+        keep |= set(listed)
+        if log:
+            files_log.info("training list: %d frame(s) from %s", len(listed), shown(config.train_list))
+    return keep or None
+
+
 def train_in_workspace(project, run, config) -> Path:
     """Train a model natively; returns the ``train`` dir holding the snapshots.
 
@@ -151,6 +203,7 @@ def train_in_workspace(project, run, config) -> Path:
         project, dataset_dir, video_ids=video_ids,
         train_fraction=config.train_fraction, seed=config.seed or 0,
         image_dims=probe_image_dims(project, video_ids, config.frames), frames=config.frames,
+        keep_in_train=training_list(project, config, log=True),
     )
 
     pose_config_path = train_dir / "pytorch_config.yaml"

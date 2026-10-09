@@ -147,12 +147,29 @@ def labels_to_coco(labels_by_video, bodyparts, *, image_dims: dict | None = None
     return {"images": images, "annotations": annotations, "categories": categories}
 
 
-def split_coco(coco: dict, *, train_fraction: float = 0.95, seed: int | None = 0) -> tuple[dict, dict]:
-    """Split a COCO dict into (train, test) by image (annotations follow their image)."""
-    images = list(coco["images"])
-    random.Random(seed).shuffle(images)
-    n_train = round(len(images) * train_fraction)
-    train_ids = {im["id"] for im in images[:n_train]}
+def split_coco(
+    coco: dict, *, train_fraction: float = 0.95, seed: int | None = 0, keep_in_train=None,
+) -> tuple[dict, dict]:
+    """Split a COCO dict into (train, test) by image (annotations follow their image).
+
+    Images whose ``file_name`` (``<video_id>/<image>``) is in ``keep_in_train`` --
+    the frames an earlier model trained on, say -- always go to training, so none of
+    them is tested on. The test set, ``1 - train_fraction`` of all images as before,
+    is drawn from the others; when they are fewer, all of them are tested on.
+
+    Raises:
+        ValueError: if ``keep_in_train`` leaves no image to test on.
+    """
+    keep = set(keep_in_train or ())
+    kept = [im for im in coco["images"] if im["file_name"] in keep]
+    rest = [im for im in coco["images"] if im["file_name"] not in keep]
+    if keep and not rest:
+        raise ValueError(f"all {len(kept)} labeled frame(s) are in the training list; "
+                         "label new frames to have something to test on")
+    random.Random(seed).shuffle(rest)
+    n_test = min(len(rest), len(coco["images"]) - round(len(coco["images"]) * train_fraction))
+    # the test frames are taken from the end, so without a list the split is the one it always was
+    train_ids = {im["id"] for im in kept} | {im["id"] for im in rest[:len(rest) - n_test]}
 
     def _subset(ids: set[int]) -> dict:
         return {
@@ -183,6 +200,7 @@ def export_coco_dataset(
     image_dims: dict | None = None,
     labels_provider=None,
     frames: str | None = None,
+    keep_in_train=None,
 ) -> tuple[Path, Path]:
     """Stage a COCO dataset for training under ``dest``.
 
@@ -197,6 +215,9 @@ def export_coco_dataset(
     ``"processed"`` or ``"original"``. Label coordinates are converted into that
     pixel space, so either set can be trained on whichever one the labels are
     stored in. ``None`` uses, per video, the set the labels are stored in.
+
+    ``keep_in_train`` names frames (``<video_id>/<image>``) that must be trained on,
+    never tested on (see :func:`split_coco`).
 
     Returns ``(train_json_path, test_json_path)``.
 
@@ -253,7 +274,13 @@ def export_coco_dataset(
     coco = labels_to_coco(labels_by_video, project.config.bodyparts, image_dims=image_dims)
     if not coco["images"]:
         raise ValueError("no labeled frame has a readable image; there is nothing to train on")
-    train, test = split_coco(coco, train_fraction=train_fraction, seed=seed)
+    train, test = split_coco(coco, train_fraction=train_fraction, seed=seed, keep_in_train=keep_in_train)
+    if keep_in_train:
+        present = {im["file_name"] for im in coco["images"]}
+        held = len(set(keep_in_train) & present)
+        files_log.info("  kept in training: %d frame(s) from the training list%s", held,
+                       f" ({len(set(keep_in_train)) - held} of the list no longer labeled)"
+                       if held < len(set(keep_in_train)) else "")
     train_path = write_coco_json(train, dest / ANNOTATIONS_DIRNAME / TRAIN_JSON)
     test_path = write_coco_json(test, dest / ANNOTATIONS_DIRNAME / TEST_JSON)
     files_log.info("dataset %s", shown(dest))
