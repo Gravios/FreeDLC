@@ -34,6 +34,7 @@ from .apply import (
     read_fdlc_sidecar,
     sidecar_for_parquet,
 )
+from .compare import DEFAULT_FAR, DEFAULT_PCK
 from .evaluate import evaluate_model
 from .layout import Layout
 from .migrate import migrate_project
@@ -897,6 +898,68 @@ def cmd_evaluate(args) -> int:
     return 0
 
 
+def _compare_target(project, name: str):
+    """``("model", bundle)`` or ``("run", run)`` for a name given to ``compare``.
+
+    A model id, or a prefix unique among the models; otherwise an analyze run as
+    ``extract --from-run`` takes one (id, unique prefix, ``latest``, or a path).
+    """
+    from . import refine
+
+    models = [m for m in project.models() if m == name] or [m for m in project.models() if m.startswith(name)]
+    if len(models) == 1:
+        return "model", ModelBundle.from_project(project, models[0])
+    if len(models) > 1:
+        raise CommandError(f"{name!r} fits {len(models)} models; give more of the id")
+    try:
+        return "run", refine.resolve_run(project, name)
+    except ValueError as err:
+        have = ", ".join(project.models()) or "none yet"
+        raise CommandError(f"{name!r} is neither a model nor an analyze run: {err}\nmodels: {have}") from err
+
+
+def cmd_compare(args) -> int:
+    from .compare import compare_models, compare_runs, format_model_comparison, format_run_comparison
+
+    project = _open_project(args.project)
+    (kind_a, a), (kind_b, b) = _compare_target(project, args.a), _compare_target(project, args.b)
+    if kind_a != kind_b:
+        print(f"{args.a} is a{'n analyze run' if kind_a == 'run' else ' model'} and {args.b} "
+              f"a{'n analyze run' if kind_b == 'run' else ' model'}; compare two models or two runs")
+        return 2
+    model_only = {"--videos": args.videos, "--all-frames": args.all_frames}
+    run_only = {"--pcutoff": args.pcutoff is not None, "--far": args.far is not None, "--top": args.top is not None}
+    wrong = [flag for flag, given in (run_only if kind_a == "model" else model_only).items() if given]
+    if wrong:
+        print(f"{', '.join(wrong)} only appl{'ies' if len(wrong) == 1 else 'y'} when comparing "
+              f"{'runs' if kind_a == 'model' else 'models'}")
+        return 2
+    try:
+        if kind_a == "model":
+            result = compare_models(project, a, b, videos=args.videos or None, frames=args.frames,
+                                    pck_threshold=args.pck, all_frames=args.all_frames)
+            lines = format_model_comparison(result)
+        else:
+            result = compare_runs(project, a, b, frames=args.frames, pcutoff=args.pcutoff,
+                                  far=args.far if args.far is not None else DEFAULT_FAR,
+                                  top=args.top if args.top is not None else 5)
+            lines = format_run_comparison(result)
+    except ValueError as err:
+        print(err)
+        return 2
+    print(json.dumps(_no_nan(result), indent=2) if args.json else "\n".join(lines))
+    return 0
+
+
+def _no_nan(value):
+    """``value`` with every NaN replaced by ``None``, so the JSON printed is valid JSON."""
+    if isinstance(value, dict):
+        return {k: _no_nan(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_no_nan(v) for v in value]
+    return None if isinstance(value, float) and value != value else value
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="fdlc", description="FreeDLC workspace CLI")
     sub = parser.add_subparsers(dest="command")
@@ -1110,6 +1173,29 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--frames", choices=Layout.VIDEO_KINDS[::-1], default=None,
                    help="frame set to score on (default: the one the model was trained on)")
     p.set_defaults(func=cmd_evaluate)
+
+    p = sub.add_parser("compare", help="compare two models against the labels, or two apply runs with each other")
+    p.add_argument("a", metavar="A", help="model id, or analyze run (id, prefix, latest, or its directory)")
+    p.add_argument("b", metavar="B", help="the same kind as A")
+    p.add_argument("--project", default=None, help=PROJECT_HELP)
+    p.add_argument("--frames", choices=Layout.VIDEO_KINDS[::-1], default=None,
+                   help="pixel space to report in (default: the frame set both were trained or run on, "
+                        "else original)")
+    p.add_argument("--json", action="store_true", help="print the full result as JSON instead of a table")
+    g = p.add_argument_group("models")
+    g.add_argument("--videos", nargs="*", help="score on these labeled videos only")
+    g.add_argument("--pck", type=float, default=DEFAULT_PCK,
+                   help=f"PCK threshold in pixels (default: {DEFAULT_PCK:g})")
+    g.add_argument("--all-frames", action="store_true", dest="all_frames",
+                   help="score on every labeled frame, training frames included (flatters both models)")
+    g = p.add_argument_group("runs")
+    g.add_argument("--pcutoff", type=float, default=None,
+                   help="likelihood at which a marker counts as drawn (default: each run's own)")
+    g.add_argument("--far", type=float, default=None, metavar="PX",
+                   help=f"a marker both runs draw differs when further apart than this (default: {DEFAULT_FAR:g})")
+    g.add_argument("--top", type=int, default=None, metavar="N",
+                   help="frames listed per video where the runs differ most (default: 5)")
+    p.set_defaults(func=cmd_compare)
 
     return parser
 

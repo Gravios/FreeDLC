@@ -164,7 +164,7 @@ def frame_stats(df, pcutoff: float):
     })
 
 
-def _spread(frames, n: int, *, best_first) -> list[int]:
+def spread(frames, n: int, *, best_first) -> list[int]:
     """Split ``frames`` (time-ordered) into ``n`` equal runs; keep the first of each by ``best_first``."""
     import numpy as np
 
@@ -187,7 +187,7 @@ def pick_low_confidence(stats, n: int, *, max_shown: int, exclude=()) -> tuple[l
     low = stats[(stats["shown"] <= max_shown) & ~stats.index.isin(list(exclude))].sort_index()
     if n <= 0 or low.empty:
         return [], len(low)
-    return _spread(low, n, best_first=[("shown", True), ("likelihood", True)]), len(low)
+    return spread(low, n, best_first=[("shown", True), ("likelihood", True)]), len(low)
 
 
 def pick_confident(stats, n: int, *, exclude=()) -> tuple[list[int], int]:
@@ -201,7 +201,7 @@ def pick_confident(stats, n: int, *, exclude=()) -> tuple[list[int], int]:
     if n <= 0 or free.empty:
         return [], 0
     top = free[free["shown"] == free["shown"].max()].sort_index()
-    return _spread(top, n, best_first=[("likelihood", False)]), len(top)
+    return spread(top, n, best_first=[("likelihood", False)]), len(top)
 
 
 def video_size(project, video_id: str, video: Path | None, kind: str | None) -> tuple[int, int] | None:

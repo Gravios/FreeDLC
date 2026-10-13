@@ -87,6 +87,7 @@ fdlc extract --all --project ws -n 20
 fdlc annotate <video_id> --project ws            # napari, on the full-resolution frames
 fdlc train ws --device cuda:0                    # on the downscaled frames
 fdlc evaluate ws <model_id> --pck 20
+fdlc compare <model_A> <model_B> --project ws    # on the labeled frames neither trained on
 fdlc apply --project ws --model-id <model_id> reduced-640x360/*.mp4 --labeled-video
 fdlc extract --from-run latest --project ws -n 10   # more frames, the model's markers proposed
 ```

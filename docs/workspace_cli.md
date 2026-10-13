@@ -34,6 +34,7 @@ Installation is described in the [README](../README.md#install).
 | `train <project>` | train a model on the labeled frames |
 | `models <project>` | the trained model bundles |
 | `evaluate <project> <model_id>` | pixel error against the annotations |
+| `compare A B` | two models on the labeled frames neither trained on, or two `apply` runs with each other |
 | `apply <videos...>` | run a model on videos (`--project` + `--model-id`, or `--model <bundle>`) |
 | `label <video>` | render a labeled video from a pose file |
 | `track <pose.parquet>` | link multi-animal detections into identities across frames |
@@ -54,7 +55,7 @@ fdlc extract --from-run latest -n 10
 
 To name it instead, most commands take it as the first positional argument
 (`fdlc train ws`), while `extract` and `annotate` take the *video* positionally
-and the project as `--project`, and `apply` takes it as `--project`. Either form
+and the project as `--project`, and `apply` and `compare` take it as `--project`. Either form
 accepts the project root or its `project.toml`. `add-video` tells the two apart
 by `project.toml`: inside a project, `fdlc add-video a.mp4 b.mp4` adds both files.
 The examples on this page name the project (`ws`) so they work from anywhere.
@@ -456,7 +457,9 @@ That makes it a check of how well the model fits its own annotations, not of how
 well it generalizes; a large error here means the model cannot even reproduce
 its training data. The held-out numbers are the test metrics computed during
 training, on the frames `--train-fraction` left out, in
-`runs/train/<run_id>/train/learning_stats.csv` and printed in the log.
+`runs/train/<run_id>/train/learning_stats.csv` and printed in the log. To
+score two models on frames neither has seen, use `compare` (see "Compare two
+models or two runs").
 `--pcutoff` (default 0.6) sets which predictions count as confident.
 
 The report gives both the mean and the median error, overall and per marker
@@ -575,6 +578,95 @@ Every individual's markers count towards the total, so in a multi-animal
 project a frame in which one animal is seen well is not unsure even if another
 is missed. Proposed positions go to the project's individuals in the order the
 model numbers them.
+
+## Compare two models or two runs
+
+```bash
+fdlc compare <model_A> <model_B>                       # against the labels
+fdlc compare <run_A> <run_B>                           # two `apply` runs, no labels needed
+fdlc compare 20261012-0901 latest --top 10 --far 15    # run ids may be shortened; `latest` is the newest
+```
+
+`compare` tells from the names whether it is given models or analyze runs: a
+model id (or a prefix unique among the models), else a run as `extract --from-run`
+takes one -- its id, a unique prefix, `latest`, or its directory. Both must be of
+one kind. `--json` prints the full result instead of the table.
+
+### Two models
+
+Both models are scored against the labels on the labeled frames **neither of
+them trained on**, read from each model's `train_frames.txt` (see "Continuing a
+model"). A model continued with `--from-model` keeps the earlier model's frames in
+training, so its test frames are among these. Each model runs on the frame set
+it was trained on, and both are reported in the same pixels: the frame set both
+were trained on, else the original frames (`--frames` chooses).
+
+```
+scored on 80 of 440 labeled frame(s), the ones neither model trained on (A trained on 360, B on 400)
+A = 20261008-180121-f8c7c7
+B = 20261012-090114-3a1d22
+errors in processed pixels; PCK within 10 px; closer: share of labeled markers each model put nearer the label
+
+                          median          mean           RMSE            PCK          closer
+marker               n       A      B       A      B       A      B       A      B       A      B
+-------------------------------------------------------------------------------------------------
+all               1200    1.52   1.31    6.48   4.02   29.80  17.10     93%    96%     41%    55%
+head_nose           80    1.10   1.02    2.31   2.20    4.10   3.92     99%    99%     46%    50%
+...
+```
+
+Per marker it gives each model's median, mean and RMSE error, the share within
+`--pck` pixels (default 10), and under *closer* how often each model put the
+marker nearer the label than the other did (the rest are ties). `n` counts the
+labeled markers scored. The fewer frames are left over, the less the
+difference between the models means: with a few dozen frames, label more before
+reading much into a difference of a pixel.
+
+A model without `train_frames.txt` whose training run is gone cannot say which
+frames it saw; `--all-frames` scores both on every labeled frame instead, which
+flatters both. `--videos` limits the comparison to some labeled videos.
+
+### Two runs
+
+Two `apply` runs of different models on the same videos are compared with each
+other; no labels are needed, and every frame of every video both runs analyzed
+counts. A run on a processed video and one on its original pair up, as they do
+for `extract --from-run`; positions are compared in the pixels of the kind both
+ran on, else the original (`--frames` chooses).
+
+```
+A = run 20261012-101500-5c1e0a (model 20261008-180121-f8c7c7), pcutoff 0.6
+B = run 20261012-103020-77b9d4 (model 20261012-090114-3a1d22), pcutoff 0.6
+2 video(s) in both, 216000 frame(s); distances in processed pixels, where both runs draw the marker
+drawn: share of frames the marker is drawn (likelihood at or above pcutoff); differ: share drawn by one run only, or by both more than 10 px apart
+
+                     drawn       likelihood      distance
+marker                 A      B       A      B  median    p95  differ
+---------------------------------------------------------------------
+all                  88%    93%    0.86   0.91    0.84    6.2      9%
+back_L2              71%    84%    0.72   0.83    1.40   14.8     22%
+...
+
+session1: the runs differ on 9412 of 108000 frame(s)
+    frame       time  differing  mean distance
+     3150    1:45.00          6           18.3
+    ...
+```
+
+Per marker: how often each run draws it (likelihood at or above the run's own
+`pcutoff`, or `--pcutoff`), its mean likelihood, how far apart the runs put it
+where both draw it (median and 95th percentile), and *differ*, the share of
+frames where one run draws it and the other does not, or both draw it more than
+`--far` pixels (default 10) apart.
+
+Which model is right cannot be told without labels, but where the two disagree
+at least one is wrong. For every video `compare` lists `--top` frames (default
+5) where they disagree most -- the most markers differing, then the largest mean
+distance -- spread over the video's disagreeing frames the way
+`extract --from-run` spreads its picks. Those are good frames to label next.
+
+Runs of a multi-animal project are not compared yet: the two runs' individuals
+are not matched to each other.
 
 ## Labeled videos and tracking
 
