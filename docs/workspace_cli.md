@@ -31,6 +31,7 @@ Installation is described in the [README](../README.md#install).
 | `videos <project>` | what is registered, labeled and extracted per video; `--register DIR` pairs a folder of processed videos |
 | `extract [<video>] --project P` | frames to annotate; `--from-run` adds frames chosen from a model's results |
 | `annotate <video> --project P` | napari on the full-resolution frames |
+| `purge --unlabeled-frames [<video>...]` | remove extracted frames with no marker placed |
 | `train <project>` | train a model on the labeled frames |
 | `models <project>` | the trained model bundles |
 | `evaluate <project> <model_id>` | pixel error against the annotations |
@@ -232,6 +233,28 @@ napari opens, so the existing labels are shown and kept.
 
 Marker names are hidden in napari; hold **N** to show them. Marker colors and
 sizes come from the project's `[display]` table (see "Marker colors and sizes").
+
+### Removing frames you did not label: `purge --unlabeled-frames`
+
+```bash
+fdlc purge --unlabeled-frames                 # list what would go, for every labeled video
+fdlc purge --unlabeled-frames --yes           # remove it
+fdlc purge session1 --unlabeled-frames --yes  # one video
+```
+
+Removes the extracted frames on which no marker is placed: from both frame sets
+(`frames/original/` and `frames/processed/`) and from the annotator's staging,
+together with their empty rows in `labels.parquet` and the staged
+`CollectedData_*` (kept as `.bak`). A frame with even one marker placed stays,
+and labels saved in napari but not yet read in count as placed. Without `--yes`
+nothing is removed; the command only says, per video, how many frames would go.
+
+Frames `extract --from-run` added with proposed markers count as unlabeled until
+you place or accept a marker, and their proposals go with them; `--keep-proposed`
+keeps those frames. A video with no labels at all is left alone unless it is
+named, so frames extracted for a video you have not annotated yet are not
+removed by accident. A frame that is a link (a migrated project's) loses only
+the link. The frames removed can be extracted again later.
 
 ## Train
 

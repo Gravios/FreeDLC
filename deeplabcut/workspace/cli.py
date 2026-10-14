@@ -960,6 +960,51 @@ def _no_nan(value):
     return None if isinstance(value, float) and value != value else value
 
 
+def cmd_purge(args) -> int:
+    from .annotate import resolve_video_id
+    from .purge import plan_unlabeled_frames, purge_unlabeled_frames, videos_with_frames
+
+    if not args.unlabeled_frames:
+        print("say what to purge: --unlabeled-frames (extracted frames with no marker placed)")
+        return 2
+    project = _open_project(args.project)
+    try:
+        named = [resolve_video_id(project, v) for v in args.videos]
+    except (FileNotFoundError, ValueError) as err:
+        print(err)
+        return 2
+    plans = []
+    for vid in dict.fromkeys(named) if named else videos_with_frames(project):
+        plan = plan_unlabeled_frames(project, vid, keep_proposed=args.keep_proposed)
+        if not plan.n_frames:
+            print(f"{vid}: no extracted frames")
+            continue
+        if not plan.n_labeled and not named:  # extracted, but not annotated yet
+            print(f"{vid}: no labels yet; its {plan.n_frames} frame(s) are left (name the video to remove them)")
+            continue
+        line = f"{vid}: {plan.n_frames} frame(s), {plan.n_labeled} labeled; "
+        line += f"{len(plan.names)} unlabeled to remove" if plan.names else "no unlabeled frame to remove"
+        if plan.proposed:
+            line += f" ({len(plan.proposed)} with proposed markers; --keep-proposed keeps those)"
+        if plan.kept_proposed:
+            line += f"; {len(plan.kept_proposed)} unlabeled with proposed markers kept"
+        print(line)
+        if plan.names:
+            plans.append(plan)
+    total = sum(len(p.names) for p in plans)
+    if not total:
+        print("nothing to remove")
+        return 0
+    if not args.yes:
+        print(f"nothing removed yet: add --yes to remove {total} frame(s) from {len(plans)} video(s)")
+        return 0
+    for plan in plans:
+        purge_unlabeled_frames(project, plan)
+    print(f"removed {total} unlabeled frame(s) from {len(plans)} video(s), from both frame sets and the "
+          "annotator's staging")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="fdlc", description="FreeDLC workspace CLI")
     sub = parser.add_subparsers(dest="command")
@@ -1196,6 +1241,19 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--top", type=int, default=None, metavar="N",
                    help="frames listed per video where the runs differ most (default: 5)")
     p.set_defaults(func=cmd_compare)
+
+    p = sub.add_parser("purge", help="remove what the project no longer needs (lists it first; --yes removes)")
+    p.add_argument("videos", nargs="*", metavar="video",
+                   help="registered video ids, or paths whose names match one (default: every video "
+                        "with labels)")
+    p.add_argument("--project", default=None, help=PROJECT_HELP)
+    p.add_argument("--unlabeled-frames", action="store_true", dest="unlabeled_frames",
+                   help="extracted frames with no marker placed, in both frame sets and the annotator's "
+                        "staging, with any markers a model proposed for them")
+    p.add_argument("--keep-proposed", action="store_true", dest="keep_proposed",
+                   help="keep unlabeled frames that have markers proposed by `extract --from-run`")
+    p.add_argument("--yes", action="store_true", help="remove them; without it, only list what would go")
+    p.set_defaults(func=cmd_purge)
 
     return parser
 
