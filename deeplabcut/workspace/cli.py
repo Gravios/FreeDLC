@@ -842,6 +842,9 @@ def cmd_train(args) -> int:
     if not 0.0 <= args.rotate180 <= 1.0:
         print(f"--rotate180 is a probability between 0 and 1, got {args.rotate180}")
         return 2
+    if args.heatmap_radius is not None and not args.heatmap_radius > 0:
+        print(f"--heatmap-radius is a number of pixels above 0, got {args.heatmap_radius:g}")
+        return 2
     net, epochs = args.net, args.epochs
     if args.from_model:  # continue a model: its architecture, and a shorter run
         source = _open_bundle(project, args.from_model)
@@ -850,7 +853,7 @@ def cmd_train(args) -> int:
     config = TrainConfig(net_type=net or "resnet_50", epochs=epochs or 200, batch_size=args.batch_size,
                          detector_epochs=args.detector_epochs, device=args.device,
                          train_fraction=args.train_fraction, seed=args.seed, frames=args.frames,
-                         rotate180=args.rotate180, from_model=args.from_model,
+                         rotate180=args.rotate180, heatmap_radius=args.heatmap_radius, from_model=args.from_model,
                          train_list=str(Path(args.train_list).resolve()) if args.train_list else None)
     try:  # before a run is opened: a frame set the labels cannot be put on, or a model that does not fit
         project.check_frames(project.annotated_videos(), config.frames)
@@ -1201,6 +1204,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rotate180", type=float, nargs="?", const=0.5, default=0.0, metavar="P",
                    help="turn training images by 180 degrees with probability P (default when given: 0.5) "
                         "before the usual +-30 degree rotation; left/right markers keep their names")
+    p.add_argument("--heatmap-radius", type=float, default=None, dest="heatmap_radius", metavar="PX",
+                   help="radius of the heatmap targets in pixels of the training image, after augmentation "
+                        "(default: DeepLabCut's 17); the Gaussian's standard deviation is 2/3 of it")
     p.add_argument("--device")
     p.add_argument("--frames", choices=Layout.VIDEO_KINDS[::-1], default="processed",
                    help="frame set to train on; labels are converted into its pixel space "

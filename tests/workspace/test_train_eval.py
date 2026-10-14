@@ -329,6 +329,27 @@ def test_fine_tune_schedule_starts_lower_and_steps_down_late():
     assert _fine_tune_schedule(other, 50) is None and other["runner"]["optimizer"]["params"]["lr"] == 1e-3
 
 
+def test_heatmap_radius_is_set_on_every_pose_head():
+    from deeplabcut.workspace.native_train import set_heatmap_radius
+
+    cfg = {"model": {"heads": {
+        "bodypart": {"target_generator": {"type": "HeatmapGaussianGenerator", "pos_dist_thresh": 17}},
+        "identity": {"target_generator": {"type": "HeatmapPlateauGenerator", "pos_dist_thresh": 17},
+                     "nested": [{"pos_dist_thresh": 17}]},
+    }}, "detector": {"model": {"pos_dist_thresh": 17}}}
+    assert set_heatmap_radius(cfg, 25.0) == 3
+    heads = cfg["model"]["heads"]
+    assert heads["bodypart"]["target_generator"]["pos_dist_thresh"] == 25.0
+    assert heads["identity"]["nested"][0]["pos_dist_thresh"] == 25.0
+    assert cfg["detector"]["model"]["pos_dist_thresh"] == 17                # a detector is left alone
+    try:
+        set_heatmap_radius({"model": {"heads": {"bodypart": {"target_generator": {"type": "SimCC"}}}}}, 5)
+    except ValueError as err:
+        assert "no heatmap radius" in str(err)
+    else:
+        raise AssertionError("expected ValueError")
+
+
 def test_train_from_model_takes_its_architecture_and_a_shorter_run():
     from deeplabcut.workspace import cli
 

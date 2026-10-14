@@ -411,6 +411,17 @@ def test_train_dispatch(monkeypatch):
         code, out = _run(["train", str(proj.root), "--rotate180", "1.5"])
         assert code == 2 and "probability between 0 and 1" in out
 
+        def radius(project, config, backend, **kw):
+            seen["radius"] = config.heatmap_radius
+            return _FakeBundle()
+
+        monkeypatch.setattr(cli, "train_model", radius)
+        for argv, expected in ((["--heatmap-radius", "25"], 25.0), ([], None)):
+            code, _ = _run(["train", str(proj.root), *argv])
+            assert code == 0 and seen["radius"] == expected
+        code, out = _run(["train", str(proj.root), "--heatmap-radius", "0"])
+        assert code == 2 and "--heatmap-radius is a number of pixels above 0, got 0" in out
+
 
 def test_evaluate_dispatch(monkeypatch):
     with tempfile.TemporaryDirectory() as d:

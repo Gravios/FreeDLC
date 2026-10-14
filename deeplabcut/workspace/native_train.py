@@ -119,6 +119,41 @@ def _fine_tune_schedule(model_cfg, epochs: int) -> str | None:
     return f"lr {start:g}, then {end:g} from epoch {at}"
 
 
+#: DeepLabCut's heatmap radius, in pixels of the image the network is fed
+DEFAULT_HEATMAP_RADIUS = 17
+
+
+def set_heatmap_radius(model_cfg, radius: float) -> int:
+    """Set ``pos_dist_thresh`` of every heatmap target generator of the pose model; return how many.
+
+    The radius is in pixels of the network's input image (the training frame after
+    augmentation). The Gaussian target's standard deviation is two thirds of it, and
+    the location-refinement offsets are learned within it. Only the pose model's
+    heads are changed, not a detector's.
+
+    Raises:
+        ValueError: if the model has no head with a heatmap radius.
+    """
+    found = 0
+
+    def walk(node) -> None:
+        nonlocal found
+        if hasattr(node, "items"):
+            if "pos_dist_thresh" in node:
+                node["pos_dist_thresh"] = radius
+                found += 1
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(model_cfg["model"]["heads"])
+    if not found:
+        raise ValueError("this architecture's heads have no heatmap radius (pos_dist_thresh) to set")
+    return found
+
+
 def read_frame_list(path) -> list[str]:
     """Frames named in a training-list file: ``<video_id>/<image>`` per line, ``#`` comments.
 
@@ -248,12 +283,17 @@ def train_in_workspace(project, run, config) -> Path:
         loader.model_cfg.train_settings.seed = config.seed
     if init_snapshot is not None and (schedule := _fine_tune_schedule(loader.model_cfg, config.epochs)):
         files_log.info("  schedule  %s", schedule)
+    if config.heatmap_radius is not None:
+        set_heatmap_radius(loader.model_cfg, config.heatmap_radius)
+        files_log.info("heatmap radius: %g px (default %d)", config.heatmap_radius, DEFAULT_HEATMAP_RADIUS)
     if config.rotate180:
         loader.model_cfg["data"]["train"]["rotate180"] = float(config.rotate180)
         files_log.info("augmentation: half turn with probability %g", config.rotate180)
     if config.top_down and loader.model_cfg.get("detector") is not None:
         loader.model_cfg.detector.train_settings.batch_size = config.detector_batch_size
         loader.model_cfg.detector.train_settings.epochs = config.detector_epochs
+    # the config as trained, not as first built: it becomes the model's pose.yaml
+    loader.model_cfg.to_yaml(pose_config_path)
 
     # DeepLabCut reports training progress (per-epoch losses, evaluation metrics)
     # through the root logger and leaves it to the entry point to attach handlers --

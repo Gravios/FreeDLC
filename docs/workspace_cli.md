@@ -277,6 +277,7 @@ Training uses every video that has a `labels.parquet`.
 | `--seed` | `0` | |
 | `--device` | auto | e.g. `cuda:0`, `cpu` |
 | `--rotate180 [P]` | off | also turn images by 180 degrees, with probability P (0.5 if not given); see Augmentation |
+| `--heatmap-radius PX` | `17` | radius of the heatmap targets; see "Heatmap radius" |
 
 ### Which resolution: `--frames`
 
@@ -443,8 +444,9 @@ degrees and rescaling between 0.5x and 1.25x (applied to half the images), a
 448x448 keypoint-aware crop, Gaussian noise and motion blur. Horizontal flips
 are off. Frames smaller than the crop are padded to it first, so at 640x360 a
 training image is a padded full frame and at 192x108 it is mostly padding.
-Apart from `--rotate180` below, these are not configurable from `fdlc train`;
-the defaults are written to `train/pytorch_config.yaml`.
+Apart from `--rotate180` below, these are not configurable from `fdlc train`.
+`train/pytorch_config.yaml` holds the configuration as trained, with the
+options given to `fdlc train` applied; it becomes the model's `pose.yaml`.
 
 `--rotate180` adds a half turn, applied with probability P (0.5 when given
 without a value) before that rotation, so the model sees the animal at
@@ -461,6 +463,32 @@ names. A horizontal or vertical *flip* would swap them and is not offered. The
 half turn is exact -- no interpolation, no border -- because it is done as both
 flips at once. The setting is recorded in the run's `run.toml` and in the
 `augmentation` line of the `--verbose` report.
+
+### Heatmap radius
+
+The model learns each marker as a heatmap: in training, the target for a marker
+is a Gaussian blob centred on the label, and the small offsets that refine a
+prediction below the heatmap's resolution are learned within the same radius.
+`--heatmap-radius` sets that radius; DeepLabCut's default is 17 px.
+
+```bash
+fdlc train --heatmap-radius 12     # tighter targets
+fdlc train --heatmap-radius 25     # wider ones
+```
+
+The radius is in pixels of the image the network is fed: the training frame
+(`--frames`), after the rescaling augmentation. The Gaussian's standard
+deviation is two thirds of it (11.3 px at 17). A wider target is easier to learn
+and tolerates labels that are a little off; a tighter one asks for more precise
+predictions and keeps the targets of markers that lie close together apart.
+
+The radius is the same for every marker and everywhere in the frame, and in
+pixels, not relative to the animal: where the animal looks larger -- rearing
+toward the camera at the walls, or an image enlarged by augmentation -- the
+target covers less of it. The radius is recorded in the run's `run.toml` and in
+`pose.yaml`, and listed by `--verbose`. Compare a model trained with another
+radius to the current one with `fdlc compare` (see "Compare two models or two
+runs").
 
 ## Evaluate
 

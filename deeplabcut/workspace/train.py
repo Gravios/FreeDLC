@@ -53,6 +53,9 @@ class TrainConfig:
     #: probability of turning a training image by 180 degrees before the usual +-30
     #: degree rotation, so the model sees the animal facing both ways (0 = never)
     rotate180: float = 0.0
+    #: radius of the heatmap targets, in pixels of the network's input image
+    #: (``None``: DeepLabCut's default of 17; see native_train.set_heatmap_radius)
+    heatmap_radius: float | None = None
     #: id of a model in the project to start from: its weights, with a fresh optimizer
     #: and learning-rate schedule (see native_train.fine_tune_snapshot)
     from_model: str | None = None
