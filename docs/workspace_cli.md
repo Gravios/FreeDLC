@@ -31,7 +31,7 @@ Installation is described in the [README](../README.md#install).
 | `videos <project>` | what is registered, labeled and extracted per video; `--register DIR` pairs a folder of processed videos |
 | `extract [<video>] --project P` | frames to annotate; `--from-run` adds frames chosen from a model's results |
 | `annotate <video> --project P` | napari on the full-resolution frames |
-| `purge --unlabeled-frames [<video>...]` | remove extracted frames with no marker placed |
+| `purge --unlabeled-frames` / `--labeled-videos` | remove extracted frames with no marker placed, or the labeled videos of analyze runs |
 | `train <project>` | train a model on the labeled frames |
 | `models <project>` | the trained model bundles |
 | `evaluate <project> <model_id>` | pixel error against the annotations |
@@ -732,6 +732,29 @@ the skeleton between them. The marker names and skeleton come from `--model`
 or `--project`/`--model-id` when given, and otherwise from the `.fdlc.toml`
 beside the pose file. `track` is for multi-animal output: it links each frame's detections
 into identities by centroid distance and writes `<base>.tracked.fdlc.parquet`.
+
+
+### Removing labeled videos: `purge --labeled-videos`
+
+```bash
+fdlc purge --labeled-videos                      # list them, with their sizes
+fdlc purge --labeled-videos --yes                # remove them
+fdlc purge session1 --labeled-videos --yes       # only session1's
+fdlc purge --labeled-videos --run <run_id> --yes # one run's (--run may be repeated)
+```
+
+Removes the `labeled.mp4` that `apply --labeled-video` wrote beside each
+`pose.parquet` of an analyze run, wherever `--out` put it. The poses stay, so
+`extract --from-run` and `compare` keep working, and a labeled video can be drawn
+again from a pose when it is wanted:
+
+```bash
+fdlc label session1.mp4 --parquet runs/analyze/<run_id>/session1/pose.parquet --project ws --model-id <model_id>
+```
+
+Labeled videos written beside the source videos (`apply --beside-video`,
+`fdlc label`) do not belong to the project and are left alone. `--labeled-videos`
+and `--unlabeled-frames` can be given together; `--yes` then removes both.
 
 ## Marker colors and sizes
 

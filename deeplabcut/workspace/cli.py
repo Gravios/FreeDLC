@@ -963,19 +963,18 @@ def _no_nan(value):
     return None if isinstance(value, float) and value != value else value
 
 
-def cmd_purge(args) -> int:
-    from .annotate import resolve_video_id
+def _size(n: int) -> str:
+    """A byte count for people: ``812 MB``, ``3.4 GB``."""
+    for unit, scale in (("GB", 1e9), ("MB", 1e6), ("kB", 1e3)):
+        if n >= scale:
+            return f"{n / scale:.1f} {unit}" if n < 10 * scale else f"{n / scale:.0f} {unit}"
+    return f"{n} B"
+
+
+def _plan_unlabeled_frames(args, project, named):
+    """Print what ``--unlabeled-frames`` would remove; return ``(summary, remove)`` or None."""
     from .purge import plan_unlabeled_frames, purge_unlabeled_frames, videos_with_frames
 
-    if not args.unlabeled_frames:
-        print("say what to purge: --unlabeled-frames (extracted frames with no marker placed)")
-        return 2
-    project = _open_project(args.project)
-    try:
-        named = [resolve_video_id(project, v) for v in args.videos]
-    except (FileNotFoundError, ValueError) as err:
-        print(err)
-        return 2
     plans = []
     for vid in dict.fromkeys(named) if named else videos_with_frames(project):
         plan = plan_unlabeled_frames(project, vid, keep_proposed=args.keep_proposed)
@@ -996,15 +995,80 @@ def cmd_purge(args) -> int:
             plans.append(plan)
     total = sum(len(p.names) for p in plans)
     if not total:
+        return None
+
+    def remove() -> str:
+        for plan in plans:
+            purge_unlabeled_frames(project, plan)
+        return (f"removed {total} unlabeled frame(s) from {len(plans)} video(s), from both frame sets and the "
+                "annotator's staging")
+
+    return f"{total} unlabeled frame(s) from {len(plans)} video(s)", remove
+
+
+def _plan_labeled_videos(args, project, named):
+    """Print what ``--labeled-videos`` would remove; return ``(summary, remove)`` or None."""
+    from . import refine
+    from .purge import find_labeled_videos, purge_labeled_videos
+
+    runs = None
+    if args.runs:
+        runs = []
+        for name in args.runs:
+            try:
+                runs.append(refine.resolve_run(project, name))
+            except ValueError as err:
+                raise CommandError(str(err)) from err
+    found = find_labeled_videos(project, runs=runs, video_ids=named or None)
+    for item in found:
+        print(f"run {item.run_id}: {item.video_id or '(unregistered video)'}  {_size(item.size)}  "
+              f"{shown(item.path)}")
+    if not found:
+        print("no labeled videos of analyze runs" + (" for these videos or runs" if named or runs else ""))
+        return None
+    total = sum(item.size for item in found)
+    n_runs = len({item.run_id for item in found})
+
+    def remove() -> str:
+        freed = purge_labeled_videos(found)
+        return (f"removed {len(found)} labeled video(s) of {n_runs} run(s), {_size(freed)}; their poses are "
+                "kept (`fdlc label` draws one again)")
+
+    return f"{len(found)} labeled video(s) of {n_runs} run(s), {_size(total)}", remove
+
+
+def cmd_purge(args) -> int:
+    from .annotate import resolve_video_id
+
+    if not (args.unlabeled_frames or args.labeled_videos):
+        print("say what to purge: --unlabeled-frames (extracted frames with no marker placed) and/or "
+              "--labeled-videos (labeled videos of analyze runs)")
+        return 2
+    if args.keep_proposed and not args.unlabeled_frames:
+        print("--keep-proposed only applies with --unlabeled-frames")
+        return 2
+    if args.runs and not args.labeled_videos:
+        print("--run only applies with --labeled-videos")
+        return 2
+    project = _open_project(args.project)
+    try:
+        named = [resolve_video_id(project, v) for v in args.videos]
+    except (FileNotFoundError, ValueError) as err:
+        print(err)
+        return 2
+    plans = []
+    for wanted, plan in ((args.unlabeled_frames, _plan_unlabeled_frames),
+                         (args.labeled_videos, _plan_labeled_videos)):
+        if wanted and (found := plan(args, project, named)) is not None:
+            plans.append(found)
+    if not plans:
         print("nothing to remove")
         return 0
     if not args.yes:
-        print(f"nothing removed yet: add --yes to remove {total} frame(s) from {len(plans)} video(s)")
+        print(f"nothing removed yet: add --yes to remove {' and '.join(summary for summary, _ in plans)}")
         return 0
-    for plan in plans:
-        purge_unlabeled_frames(project, plan)
-    print(f"removed {total} unlabeled frame(s) from {len(plans)} video(s), from both frame sets and the "
-          "annotator's staging")
+    for _, remove in plans:
+        print(remove())
     return 0
 
 
@@ -1251,13 +1315,18 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("purge", help="remove what the project no longer needs (lists it first; --yes removes)")
     p.add_argument("videos", nargs="*", metavar="video",
                    help="registered video ids, or paths whose names match one (default: every video "
-                        "with labels)")
+                        "with labels, and every analyze run's labeled videos)")
     p.add_argument("--project", default=None, help=PROJECT_HELP)
     p.add_argument("--unlabeled-frames", action="store_true", dest="unlabeled_frames",
                    help="extracted frames with no marker placed, in both frame sets and the annotator's "
                         "staging, with any markers a model proposed for them")
     p.add_argument("--keep-proposed", action="store_true", dest="keep_proposed",
                    help="keep unlabeled frames that have markers proposed by `extract --from-run`")
+    p.add_argument("--labeled-videos", action="store_true", dest="labeled_videos",
+                   help="the labeled videos `apply --labeled-video` drew for analyze runs; their poses stay")
+    p.add_argument("--run", action="append", dest="runs", metavar="RUN",
+                   help="with --labeled-videos: only this analyze run's (id, prefix, latest, or its "
+                        "directory); may be given more than once")
     p.add_argument("--yes", action="store_true", help="remove them; without it, only list what would go")
     p.set_defaults(func=cmd_purge)
 

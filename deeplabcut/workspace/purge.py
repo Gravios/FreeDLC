@@ -22,6 +22,14 @@ project's) loses only the link, never the file it points to.
 Frames are named by the source frame they were read from, so the frames removed can
 be extracted again later, by ``extract`` with another selection or ``extract
 --from-run``.
+
+:func:`find_labeled_videos` finds the labeled videos ``apply --labeled-video`` drew
+for analyze runs (``labeled.mp4`` beside each run's ``pose.parquet``, wherever
+``--out`` put it), and :func:`purge_labeled_videos` removes them. The poses stay, so
+``extract --from-run`` and ``compare`` keep working, and ``fdlc label`` draws a
+labeled video again from a pose when one is wanted. Labeled videos drawn beside the
+source videos (``apply --beside-video``, ``fdlc label``) are not the project's and
+are left alone.
 """
 from __future__ import annotations
 
@@ -29,7 +37,19 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-__all__ = ["UnlabeledFrames", "plan_unlabeled_frames", "purge_unlabeled_frames", "videos_with_frames"]
+__all__ = [
+    "UnlabeledFrames",
+    "plan_unlabeled_frames",
+    "purge_unlabeled_frames",
+    "videos_with_frames",
+    "LabeledVideo",
+    "LABELED_VIDEO",
+    "find_labeled_videos",
+    "purge_labeled_videos",
+]
+
+#: the labeled video `apply --labeled-video` writes beside a run's pose.parquet
+LABELED_VIDEO = "labeled.mp4"
 
 log = logging.getLogger(__name__)
 
@@ -164,3 +184,45 @@ def purge_unlabeled_frames(project, plan: UnlabeledFrames) -> int:
             write_labels_parquet(labels[~gone], parquet)
     log.info("%s: removed %d unlabeled frame(s)", vid, len(names))
     return removed
+
+
+@dataclass(frozen=True)
+class LabeledVideo:
+    """A labeled video an analyze run drew."""
+
+    run_id: str
+    video_id: str | None  # the registered video it shows, if it can be told
+    path: Path
+    size: int             # bytes
+
+
+def find_labeled_videos(project, *, runs=None, video_ids=None) -> list[LabeledVideo]:
+    """The labeled videos of the project's analyze runs, oldest run first.
+
+    ``runs`` limits the search to those runs, ``video_ids`` to the labeled videos of
+    those registered videos.
+    """
+    from . import refine
+
+    wanted = set(video_ids) if video_ids else None
+    found: list[LabeledVideo] = []
+    for run in runs if runs is not None else project.runs("analyze"):
+        for video, pose in refine.run_poses(project, run):
+            path = pose.with_name(LABELED_VIDEO)
+            if not path.is_file():
+                continue
+            vid = refine.video_id_for(project, video) if video is not None else None
+            if wanted is not None and vid not in wanted:
+                continue
+            found.append(LabeledVideo(run_id=run.run_id, video_id=vid, path=path, size=path.stat().st_size))
+    return found
+
+
+def purge_labeled_videos(videos) -> int:
+    """Remove ``videos`` (from :func:`find_labeled_videos`); return the bytes freed."""
+    freed = 0
+    for item in videos:
+        if item.path.is_file():
+            freed += item.path.stat().st_size
+            item.path.unlink()
+    return freed

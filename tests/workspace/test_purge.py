@@ -103,7 +103,7 @@ def test_purge_lists_first_and_removes_with_yes():
         assert code == 2 and "--unlabeled-frames" in out
         code, out = _run(["purge", "--unlabeled-frames", "--project", ws_])
         assert code == 0 and "clip: 6 frame(s), 3 labeled; 3 unlabeled to remove (1 with proposed markers" in out
-        assert "add --yes to remove 3 frame(s) from 1 video(s)" in out
+        assert "add --yes to remove 3 unlabeled frame(s) from 1 video(s)" in out
         assert len(list(lay.frames_dir("clip", "original").glob("*.png"))) == 6       # a dry run
 
         code, out = _run(["purge", "--unlabeled-frames", "--keep-proposed", "--yes", "--project", ws_])
@@ -146,6 +146,66 @@ def test_a_video_without_labels_is_left_unless_named():
         assert code == 0 and "removed 2 unlabeled frame(s)" in out and not list(frames_dir.glob("*.png"))
         code, out = _run(["purge", "nope", "--unlabeled-frames", "--project", ws_])
         assert code == 2 and "no registered video matches 'nope'" in out
+
+
+def _analyze(proj, video: Path, *, labeled: bytes | None = b"x" * 2048, out: Path | None = None):
+    """An analyze run with a pose for ``video``, and a labeled video beside it unless ``labeled`` is None."""
+    run = proj.new_run("analyze")
+    pose_dir = (out or run.dir) / video.stem
+    pose_dir.mkdir(parents=True)
+    pd.DataFrame({"frame": [0], "individual": ["single"], "bodypart": ["snout"], "x": [1.0], "y": [1.0],
+                  "likelihood": [0.9]}).to_parquet(pose_dir / "pose.parquet")
+    write_manifest(pose_dir / "run.toml", {"run_id": video.stem, "kind": "analyze", "inputs": [str(video)]})
+    if labeled is not None:
+        (pose_dir / "labeled.mp4").write_bytes(labeled)
+    run.finish(outputs=[str(pose_dir / "pose.parquet")])
+    return run, pose_dir
+
+
+def test_labeled_videos_of_runs_are_removed_and_their_poses_kept():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        proj = _project(d)
+        ws_ = str(proj.root)
+        first, first_dir = _analyze(proj, d / "raw" / "clip.mp4")
+        second, second_dir = _analyze(proj, d / "raw" / "other.mp4", out=d / "elsewhere")   # apply --out
+        third, third_dir = _analyze(proj, d / "raw" / "clip.mp4", labeled=None)              # no labeled video
+
+        code, out = _run(["purge", "--labeled-videos", "--project", ws_])
+        assert code == 0 and f"run {first.run_id}: clip  2.0 kB" in out
+        assert f"run {second.run_id}: (unregistered video)" in out and third.run_id not in out
+        assert "add --yes to remove 2 labeled video(s) of 2 run(s), 4.1 kB" in out
+        assert (first_dir / "labeled.mp4").is_file()                              # a dry run
+
+        code, out = _run(["purge", "clip", "--labeled-videos", "--yes", "--project", ws_])
+        assert code == 0 and "removed 1 labeled video(s) of 1 run(s), 2.0 kB" in out
+        assert not (first_dir / "labeled.mp4").exists() and (first_dir / "pose.parquet").is_file()
+        assert (second_dir / "labeled.mp4").is_file()                             # not clip's
+
+        code, out = _run(["purge", "--labeled-videos", "--run", second.run_id, "--yes", "--project", ws_])
+        assert code == 0 and "removed 1 labeled video(s)" in out and not (second_dir / "labeled.mp4").exists()
+        code, out = _run(["purge", "--labeled-videos", "--project", ws_])
+        assert code == 0 and "no labeled videos of analyze runs" in out and "nothing to remove" in out
+
+        code, out = _run(["purge", "--labeled-videos", "--run", "nope", "--project", ws_])
+        assert code == 2 and "no analyze run 'nope'" in out
+        code, out = _run(["purge", "--unlabeled-frames", "--run", "latest", "--project", ws_])
+        assert code == 2 and "--run only applies with --labeled-videos" in out
+        code, out = _run(["purge", "--labeled-videos", "--keep-proposed", "--project", ws_])
+        assert code == 2 and "--keep-proposed only applies with --unlabeled-frames" in out
+
+
+def test_both_at_once_are_confirmed_together():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        proj = _project(d)
+        _, pose_dir = _analyze(proj, d / "raw" / "clip.mp4")
+        code, out = _run(["purge", "--unlabeled-frames", "--labeled-videos", "--project", str(proj.root)])
+        assert code == 0 and ("add --yes to remove 3 unlabeled frame(s) from 1 video(s) and 1 labeled video(s) "
+                              "of 1 run(s)") in out
+        code, out = _run(["purge", "--unlabeled-frames", "--labeled-videos", "--yes", "--project", str(proj.root)])
+        assert code == 0 and "removed 3 unlabeled frame(s)" in out and "removed 1 labeled video(s)" in out
+        assert not (pose_dir / "labeled.mp4").exists()
 
 
 def _run_smoke() -> int:
