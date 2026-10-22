@@ -197,19 +197,25 @@ def test_videos_table_shows_pairing_labels_and_problems():
             rec = VideoRecord(video_id=vid, source_path=f"{kind}.mp4", width=w, height=h, link="reference")
             write_manifest(lay.video_toml(vid, kind), rec.to_dict())
 
-        def label(vid):
+        def label(vid, placed=()):
+            import pandas as pd
+
             lay.annotation_dir(vid).mkdir(parents=True, exist_ok=True)
-            lay.labels_parquet(vid).write_bytes(b"")
+            rows = [(im, "single", "snout", 1.0 if im in placed else float("nan"), 1.0)
+                    for im in ("img1.png", "img2.png", "img3.png")]
+            pd.DataFrame(rows, columns=["image", "individual", "bodypart", "x", "y"]).to_parquet(
+                lay.labels_parquet(vid))
 
         register("paired", "original", 1920, 1080)
         register("paired", "processed", 192, 108)
-        label("paired")
+        label("paired", placed=("img1.png", "img3.png"))               # img3: labeled, not extracted
         write_manifest(lay.labels_toml("paired"),
                        LabelsRecord(video_id="paired", space="processed", scale_x=0.1, scale_y=0.1).to_dict())
         fdir = lay.frames_dir("paired", "original")
         fdir.mkdir(parents=True)
         (fdir / "img1.png").write_bytes(b"px")
         (fdir / "img2.png").symlink_to(fdir / "img2.png")           # a link to itself
+        (fdir / "img4.png").write_bytes(b"px")                      # extracted, not labeled
 
         register("small-192x108", "processed", 192, 108)             # registered under its own id
         label("small-192x108")                                       # ...with labels, but no original
@@ -217,8 +223,9 @@ def test_videos_table_shows_pairing_labels_and_problems():
         code, out = _run(["videos", str(proj.root)])
         assert code == 0
         rows = {line.split()[0]: line.split() for line in out.splitlines() if not line.startswith("  !")}
-        assert rows["paired"][1:] == ["1920x1080", "192x108", "processed", "px", "1/0"]
-        assert rows["small-192x108"][1:] == ["-", "192x108", "original", "px?", "0/0"]   # "?": inferred
+        assert rows["video"] == ["video", "id", "original", "processed", "labels", "in", "frames", "o/p", "labeled"]
+        assert rows["paired"][1:] == ["1920x1080", "192x108", "processed", "px", "2/0", "1/2"]
+        assert rows["small-192x108"][1:] == ["-", "192x108", "original", "px?", "0/0", "-"]   # "?": inferred
         assert "! paired: 1 original frame(s) are broken links" in out
         assert "! small-192x108: has labels but no original video is registered under this id" in out
         assert "! small-192x108: processed video has no original with the same id" in out

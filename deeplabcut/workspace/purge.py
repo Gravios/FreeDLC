@@ -42,6 +42,7 @@ __all__ = [
     "plan_unlabeled_frames",
     "purge_unlabeled_frames",
     "videos_with_frames",
+    "labeled_frames",
     "LabeledVideo",
     "LABELED_VIDEO",
     "find_labeled_videos",
@@ -88,7 +89,7 @@ def _frame_names(project, video_id: str) -> set[str]:
     return names
 
 
-def _labeled(project, video_id: str) -> set[str]:
+def labeled_frames(project, video_id: str) -> set[str]:
     """Frames of ``video_id`` with a marker placed, ingested or only staged."""
     import pandas as pd
 
@@ -119,7 +120,7 @@ def _proposed(project, video_id: str) -> set[str]:
 def plan_unlabeled_frames(project, video_id: str, *, keep_proposed: bool = False) -> UnlabeledFrames:
     """The extracted frames of ``video_id`` that :func:`purge_unlabeled_frames` would remove."""
     names = _frame_names(project, video_id)
-    labeled = _labeled(project, video_id) & names
+    labeled = labeled_frames(project, video_id) & names
     unlabeled = names - labeled
     proposed = _proposed(project, video_id) & unlabeled
     kept = proposed if keep_proposed else set()
@@ -154,7 +155,7 @@ def purge_unlabeled_frames(project, plan: UnlabeledFrames) -> int:
     from .annotations import find_collected_data, write_labels_parquet
 
     vid = plan.video_id
-    names = set(plan.names) - _labeled(project, vid)
+    names = set(plan.names) - labeled_frames(project, vid)
     if not names:
         return 0
     removed = 0

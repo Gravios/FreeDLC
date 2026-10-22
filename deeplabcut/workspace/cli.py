@@ -675,7 +675,33 @@ def _video_row(project, vid: str) -> tuple[list[str], list[str]]:
             problems.append("has labels but no original video is registered under this id")
     if original == "-" and processed != "-":
         problems.append("processed video has no original with the same id (see `add-video --video-id`)")
-    return [vid, original, processed, labels, f"{frames('original')}/{frames('processed')}"], problems
+    return [vid, original, processed, labels, f"{frames('original')}/{frames('processed')}",
+            _labeled_count(project, vid, problems)], problems
+
+
+def _labeled_count(project, vid: str, problems: list[str]) -> str:
+    """``labeled/extracted``: the readable extracted frames with a marker placed, of all of them.
+
+    The original frames are counted, or the processed ones when there are no
+    originals. Labels saved in napari and not yet read in count, as for
+    ``purge --unlabeled-frames``.
+    """
+    from .purge import labeled_frames
+
+    names: set[str] = set()
+    for kind in project.layout.VIDEO_KINDS:
+        d = project.layout.frames_dir(vid, kind)
+        names = {f.name for f in d.glob("*.png") if f.is_file()} if d.is_dir() else set()
+        if names:
+            break
+    if not names:
+        return "-"
+    try:
+        labeled = labeled_frames(project, vid)
+    except (ImportError, OSError, ValueError, KeyError) as err:  # e.g. no pytables for a staged .h5
+        problems.append(f"cannot count the labeled frames: {err}")
+        return "?"
+    return f"{len(labeled & names)}/{len(names)}"
 
 
 def cmd_videos(args) -> int:
@@ -686,7 +712,7 @@ def cmd_videos(args) -> int:
         if code:
             return code
         print()
-    header = ["video id", "original", "processed", "labels in", "frames o/p"]
+    header = ["video id", "original", "processed", "labels in", "frames o/p", "labeled"]
     rows, notes = [], []
     for vid in project.video_ids():
         row, problems = _video_row(project, vid)

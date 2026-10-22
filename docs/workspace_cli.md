@@ -107,10 +107,10 @@ Without `--video-id`, the second file would be registered as a separate video
 extracted under it, and points out what does not fit together:
 
 ```text
-video id          original   processed  labels in     frames o/p
-session1          1920x1080  192x108    original px   20/20
-session2          1920x1080  -          original px   20/0
-session3-192x108  -          192x108    original px?  0/0
+video id          original   processed  labels in     frames o/p  labeled
+session1          1920x1080  192x108    original px   20/20       18/20
+session2          1920x1080  -          original px   20/0        20/20
+session3-192x108  -          192x108    original px?  0/0         -
   ! session3-192x108: has labels but no original video is registered under this id
   ! session3-192x108: processed video has no original with the same id (see `add-video --video-id`)
 ```
@@ -120,7 +120,10 @@ was annotated, which is always the original. It does not limit what you can trai
 on. A trailing `?` means there is no `labels.toml` and the space is inferred from
 the current pairing.
 `frames o/p` counts the readable frames in `frames/original/` and
-`frames/processed/`.
+`frames/processed/`. `labeled` counts the extracted frames with at least one
+marker placed, of all extracted frames (the original ones, or the processed ones
+for a video without originals); labels saved in napari but not yet read in
+count. `fdlc purge --unlabeled-frames` removes the rest.
 
 `--link` controls how the media is stored: `symlink` (default), `copy`, or
 `reference` (record the path only). `--exist-ok` re-registers an id; it replaces
