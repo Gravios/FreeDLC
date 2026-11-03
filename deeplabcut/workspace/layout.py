@@ -25,8 +25,9 @@ module hard-codes directory names. The layout:
 annotation happens on) or ``processed`` (the downscaled counterpart the model trains
 and runs on).
 
-Filenames are intentionally boring and stable (``pose.parquet``, ``labels.parquet``,
-``video.mp4``); the *directory* carries the coordinates. This is a Layout object
+Filenames under ``sources/`` are intentionally boring and stable (``labels.parquet``,
+``video.mp4``); the *directory* carries the coordinates. A run's per-video files are
+named after the video instead (``<stem>.parquet``, see :mod:`.apply`). This is a Layout object
 rather than loose functions so a root is resolved once and passed around.
 """
 from __future__ import annotations

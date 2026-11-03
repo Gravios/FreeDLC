@@ -28,6 +28,7 @@ from . import skeleton_lib
 from .apply import (
     apply_to_videos,
     beside_video_path,
+    check_run_outputs,
     collect_videos,
     labeled_video_path,
     read_fdlc_display,
@@ -282,7 +283,7 @@ def _extract_from_run(args) -> int:
         return 2
     poses = refine.run_poses(project, run)
     if not poses:
-        print(f"no pose.parquet found for run {run.run_id} ({run.dir})")
+        print(f"no poses found for run {run.run_id} ({run.dir})")
         return 2
 
     pcutoff = args.pcutoff if args.pcutoff is not None else refine.run_pcutoff(run)
@@ -763,9 +764,19 @@ def cmd_apply(args) -> int:
 
     if args.model:  # drop-in, run-dir output
         out_root = Path(args.out) if args.out else Path("dlc-predictions")
+        try:
+            check_run_outputs(videos, out_root, labeled_video=args.labeled_video)
+        except ValueError as err:
+            print(err)
+            return 2
         _report(apply_to_videos(bundle, videos, out_root, **common))
         return 0
 
+    try:  # before a run is opened: files that would overwrite each other or a video
+        check_run_outputs(videos, Path(args.out) if args.out else None, labeled_video=args.labeled_video)
+    except ValueError as err:
+        print(err)
+        return 2
     run = project.new_run("analyze", model_id=args.model_id, inputs=[str(v) for v in videos],
                           params={"pcutoff": args.pcutoff})
     run.start()

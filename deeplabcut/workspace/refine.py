@@ -3,7 +3,7 @@
 #
 """Choose frames to label next from where an applied model is unsure.
 
-An ``analyze`` run (``fdlc apply --project``) leaves one ``pose.parquet`` per
+An ``analyze`` run (``fdlc apply --project``) leaves one pose parquet per
 video, with a likelihood for every marker in every frame. A labeled video draws a
 marker only where its likelihood reaches ``pcutoff``, so a frame in which few or
 none of them do is a frame the model cannot handle yet -- and the most useful
@@ -95,16 +95,22 @@ def run_pcutoff(run) -> float:
 
 
 def run_poses(project, run) -> list[tuple[Path | None, Path]]:
-    """``(video, pose.parquet)`` for every video of ``run``, sorted by pose path.
+    """``(video, pose parquet)`` for every video of ``run``, sorted by pose path.
 
     The poses are found in the run directory, or where the run's outputs say they
-    were written (``apply --out``). Each pose's own ``run.toml`` names its video;
-    ``None`` when it does not.
+    were written (``apply --out``): ``<stem>.parquet`` beside its ``<stem>.toml``
+    record, or, in runs written before, ``<video>/pose.parquet`` beside a
+    ``run.toml``. A pose's record names its video; ``None`` when it does not.
+    Other parquet files (``track``'s ``.tracked.parquet``, say) have no record and
+    are not poses.
     """
-    poses = set(run.dir.glob("*/pose.parquet"))
+    from .apply import LEGACY_POSE, pose_record_path
+
+    poses = set(run.dir.glob(f"*/{LEGACY_POSE}"))
+    poses |= {p for p in run.dir.glob("*.parquet") if pose_record_path(p).is_file()}
     for out in run.manifest().outputs:
         for p in (Path(out), project.layout.root / out):
-            if p.name == "pose.parquet" and p.is_file():
+            if p.suffix == ".parquet" and p.is_file():
                 poses.add(p)
                 break
     pairs: dict[Path, tuple[Path | None, Path]] = {}
@@ -113,7 +119,7 @@ def run_poses(project, run) -> list[tuple[Path | None, Path]]:
         if key in pairs:
             continue
         video = None
-        record = pose.with_name("run.toml")
+        record = pose_record_path(pose)
         if record.is_file():
             inputs = read_manifest(record).get("inputs") or []
             video = Path(inputs[0]) if inputs else None

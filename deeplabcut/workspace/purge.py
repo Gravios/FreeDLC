@@ -24,8 +24,9 @@ be extracted again later, by ``extract`` with another selection or ``extract
 --from-run``.
 
 :func:`find_labeled_videos` finds the labeled videos ``apply --labeled-video`` drew
-for analyze runs (``labeled.mp4`` beside each run's ``pose.parquet``, wherever
-``--out`` put it), and :func:`purge_labeled_videos` removes them. The poses stay, so
+for analyze runs (``<stem>.mp4`` beside each run's ``<stem>.parquet``, or
+``labeled.mp4`` beside a ``pose.parquet`` in runs written before; wherever ``--out``
+put them), and :func:`purge_labeled_videos` removes them. The poses stay, so
 ``extract --from-run`` and ``compare`` keep working, and ``fdlc label`` draws a
 labeled video again from a pose when one is wanted. Labeled videos drawn beside the
 source videos (``apply --beside-video``, ``fdlc label``) are not the project's and
@@ -44,13 +45,9 @@ __all__ = [
     "videos_with_frames",
     "labeled_frames",
     "LabeledVideo",
-    "LABELED_VIDEO",
     "find_labeled_videos",
     "purge_labeled_videos",
 ]
-
-#: the labeled video `apply --labeled-video` writes beside a run's pose.parquet
-LABELED_VIDEO = "labeled.mp4"
 
 log = logging.getLogger(__name__)
 
@@ -204,14 +201,15 @@ def find_labeled_videos(project, *, runs=None, video_ids=None) -> list[LabeledVi
     those registered videos.
     """
     from . import refine
+    from .apply import pose_labeled_path
 
     wanted = set(video_ids) if video_ids else None
     found: list[LabeledVideo] = []
     for run in runs if runs is not None else project.runs("analyze"):
         for video, pose in refine.run_poses(project, run):
-            path = pose.with_name(LABELED_VIDEO)
-            if not path.is_file():
-                continue
+            path = pose_labeled_path(pose)
+            if not path.is_file() or (video is not None and path.resolve() == Path(video).resolve()):
+                continue  # never the video the run was computed on
             vid = refine.video_id_for(project, video) if video is not None else None
             if wanted is not None and vid not in wanted:
                 continue

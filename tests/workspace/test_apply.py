@@ -104,9 +104,67 @@ def test_apply_to_videos_builds_runner_once(monkeypatch):
         assert tracker["builds"] == 1                                    # runner built ONCE
         assert tracker["inferred"] == ["clip1.mp4", "clip2.mp4", "clip3.mp4"]
         assert len(results) == 3
-        for v in vids:
-            od = (d / "out") / v.stem
-            assert (od / "pose.parquet").exists() and (od / "run.toml").exists()
+        for v in vids:                                                   # named after the video, side by side
+            assert (d / "out" / f"{v.stem}.parquet").exists() and (d / "out" / f"{v.stem}.toml").exists()
+            assert results[str(v)] == d / "out" / f"{v.stem}.parquet"
+        assert sorted(p.name for p in (d / "out").iterdir()) == [
+            "clip1.parquet", "clip1.toml", "clip2.parquet", "clip2.toml", "clip3.parquet", "clip3.toml"]
+
+
+def test_videos_whose_files_would_collide_are_refused(monkeypatch):
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        bundle = _bundle(d)
+        tracker = _patch_inference(monkeypatch)
+        (d / "a").mkdir()
+        (d / "b").mkdir()
+        same = [d / "a" / "clip.mp4", d / "b" / "clip.mp4"]
+        for v in [*same, d / "run.mp4"]:
+            v.write_bytes(b"v")
+        for videos, out, needle in (
+            (same, d / "out", "2 videos are named clip"),
+            ([d / "run.mp4"], d / "out", "a video named 'run' would replace the run's own run.toml"),
+            ([same[0]], d / "a", "its labeled video would be written over it"),   # --out its own folder
+        ):
+            try:
+                ws.apply_to_videos(bundle, videos, out, labeled_video=True)
+            except ValueError as err:
+                assert needle in str(err), str(err)
+            else:
+                raise AssertionError(f"expected ValueError: {needle}")
+        assert tracker["builds"] == 0 and not (d / "out").exists()             # refused before any work
+        from deeplabcut.workspace.apply import check_run_outputs
+
+        assert check_run_outputs([same[0]], None) is None                        # a new run directory
+        assert check_run_outputs([same[0]], d / "a", labeled_video=False) is None  # no video to overwrite it
+
+
+def test_a_runs_poses_are_found_in_both_layouts():
+    import pandas as pd
+
+    from deeplabcut.workspace import refine
+    from deeplabcut.workspace.apply import pose_labeled_path, pose_record_path
+    from deeplabcut.workspace.manifest import write_manifest
+
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        proj = ws.Project.create(d / "ws", task="reach", bodyparts=["snout"])
+        pose = pd.DataFrame({"frame": [0], "individual": ["single"], "bodypart": ["snout"], "x": [1.0],
+                             "y": [1.0], "likelihood": [0.9]})
+        run = proj.new_run("analyze")
+        pose.to_parquet(run.dir / "clip1.parquet")                       # now: <stem>.parquet + <stem>.toml
+        write_manifest(run.dir / "clip1.toml", {"run_id": "clip1", "inputs": [str(d / "clip1.mp4")]})
+        pose.to_parquet(run.dir / "clip1.tracked.parquet")               # not a pose: no record
+        (run.dir / "clip2").mkdir()                                      # before: <slug>/pose.parquet + run.toml
+        pose.to_parquet(run.dir / "clip2" / "pose.parquet")
+        write_manifest(run.dir / "clip2" / "run.toml", {"run_id": "clip2", "inputs": [str(d / "clip2.mp4")]})
+        run.finish()
+        found = refine.run_poses(proj, run)
+        assert found == [(d / "clip1.mp4", run.dir / "clip1.parquet"),
+                         (d / "clip2.mp4", run.dir / "clip2" / "pose.parquet")]
+        assert pose_labeled_path(run.dir / "clip1.parquet") == run.dir / "clip1.mp4"
+        assert pose_labeled_path(run.dir / "clip2" / "pose.parquet") == run.dir / "clip2" / "labeled.mp4"
+        assert pose_record_path(run.dir / "clip2" / "pose.parquet") == run.dir / "clip2" / "run.toml"
 
 
 def test_apply_file_report_names_the_files_involved(monkeypatch):
@@ -138,7 +196,7 @@ def test_apply_file_report_names_the_files_involved(monkeypatch):
         for needed in (
             str(bundle.path), str(bundle.pose_config_path), str(bundle.snapshot_path()),
             f"{link} -> {real.resolve()}",
-            str(d / "out" / "clip1" / "pose.parquet"), str(d / "out" / "clip1" / "run.toml"),
+            str(d / "out" / "clip1.parquet"), str(d / "out" / "clip1.toml"),
         ):
             assert needed in out, f"{needed!r} missing from:\n{out}"
         assert run(False) == ""                                  # the flag does not stick

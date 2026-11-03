@@ -38,7 +38,7 @@ Installation is described in the [README](../README.md#install).
 | `compare A B` | two models on the labeled frames neither trained on, or two `apply` runs with each other |
 | `apply <videos...>` | run a model on videos (`--project` + `--model-id`, or `--model <bundle>`) |
 | `label <video>` | render a labeled video from a pose file |
-| `track <pose.parquet>` | link multi-animal detections into identities across frames |
+| `track <pose parquet>` | link multi-animal detections into identities across frames |
 | `export <bundle>` | write the pose model as ONNX (see [onnx_export.md](onnx_export.md)) |
 
 Every command has `--help`.
@@ -541,12 +541,20 @@ full-resolution video for one trained with `--frames original`.
 
 Where the results go:
 
-- with `--project`, to an analyze run: `runs/analyze/<run_id>/<video>/`, named
-  after the video file (lower case, other characters as `-`), holds `pose.parquet`, a `run.toml` naming the video, and with `--labeled-video`
-  a `labeled.mp4`. This is what `extract --from-run` reads (see the next
-  section). The run records the `--pcutoff` its labeled videos were drawn with
-  (default 0.6: a marker is drawn when its likelihood reaches it). `--out DIR`
-  writes the per-video folders under `DIR` instead; the run still lists them.
+- with `--project`, to an analyze run, `runs/analyze/<run_id>/`. Each video's
+  files are named after it and sit side by side: `session1.parquet` (the pose),
+  `session1.toml` (a record naming the video and model), and with
+  `--labeled-video` `session1.mp4`. This is what `extract --from-run` and
+  `compare` read (see below). The run records the `--pcutoff` its labeled videos
+  were drawn with (default 0.6: a marker is drawn when its likelihood reaches it).
+  `--out DIR` writes the files into `DIR` instead; the run still lists them.
+
+  Two videos with the same file name in one `apply` would overwrite each other's
+  files, so `apply` refuses them before it starts; apply them in separate runs.
+  It also refuses `--out` the videos' own folder together with `--labeled-video`,
+  where `session1.mp4` would replace the video itself, and a video named `run`.
+  Runs made before this layout keep a folder per video (`<video>/pose.parquet`,
+  `run.toml`, `labeled.mp4`); every command still reads them.
 - with `--beside-video`, next to each video as `<stem>.fdlc.parquet`,
   `<stem>.fdlc.toml` and `<stem>.fdlc.mp4`. No run is made, so these cannot be
   used with `extract --from-run`.
@@ -554,7 +562,7 @@ Where the results go:
   own, without a project, and the results go to `--out` (default
   `dlc-predictions/`).
 
-`pose.parquet` has one row per frame, individual and marker: `frame, individual,
+A pose parquet has one row per frame, individual and marker: `frame, individual,
 bodypart, x, y, likelihood`, in the pixels of the video it was run on.
 
 ## More frames from a model's own results: `extract --from-run`
@@ -726,7 +734,7 @@ are not matched to each other.
 
 ```bash
 fdlc label session1.mp4                                  # from session1.fdlc.parquet beside it
-fdlc label session1.mp4 --parquet runs/analyze/<run_id>/session1/pose.parquet --project ws --model-id <model_id>
+fdlc label session1.mp4 --parquet runs/analyze/<run_id>/session1.parquet --project ws --model-id <model_id>
 fdlc track session1.fdlc.parquet --max-distance 50 --max-gap 10
 ```
 
@@ -746,13 +754,14 @@ fdlc purge session1 --labeled-videos --yes       # only session1's
 fdlc purge --labeled-videos --run <run_id> --yes # one run's (--run may be repeated)
 ```
 
-Removes the `labeled.mp4` that `apply --labeled-video` wrote beside each
-`pose.parquet` of an analyze run, wherever `--out` put it. The poses stay, so
+Removes the labeled videos `apply --labeled-video` wrote for analyze runs --
+`session1.mp4` beside `session1.parquet`, or `labeled.mp4` in runs made before --
+wherever `--out` put them. A run's source video is never taken for one. The poses stay, so
 `extract --from-run` and `compare` keep working, and a labeled video can be drawn
 again from a pose when it is wanted:
 
 ```bash
-fdlc label session1.mp4 --parquet runs/analyze/<run_id>/session1/pose.parquet --project ws --model-id <model_id>
+fdlc label session1.mp4 --parquet runs/analyze/<run_id>/session1.parquet --project ws --model-id <model_id>
 ```
 
 Labeled videos written beside the source videos (`apply --beside-video`,

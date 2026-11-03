@@ -367,6 +367,17 @@ def test_apply_dispatch_project(monkeypatch):
         assert proj.runs("analyze")[0].manifest().status == "finished"
         assert proj.runs("analyze")[0].manifest().params["pcutoff"] == 0.6   # what extract --from-run uses
 
+        # videos whose files would overwrite each other stop before a run is opened
+        (Path(d) / "other").mkdir()
+        twin = Path(d) / "other" / "clip1.mp4"
+        twin.write_bytes(b"v")
+        code, out = _run(["apply", str(v1), str(twin), "--project", str(proj.root), "--model-id", "m1"])
+        assert code == 2 and "2 videos are named clip1" in out
+        assert len(proj.runs("analyze")) == 1
+        code, out = _run(["apply", str(v1), "--model", str(proj.layout.model_dir("m1")), "--out", d,
+                          "--labeled-video"])
+        assert code == 2 and "its labeled video would be written over it" in out
+
 
 def test_apply_dispatch_dropin_model(monkeypatch):
     with tempfile.TemporaryDirectory() as d:

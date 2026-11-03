@@ -195,6 +195,34 @@ def test_labeled_videos_of_runs_are_removed_and_their_poses_kept():
         assert code == 2 and "--keep-proposed only applies with --unlabeled-frames" in out
 
 
+def test_labeled_videos_named_after_their_video_are_removed_too():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        proj = _project(d)
+        run = proj.new_run("analyze")
+        pd.DataFrame({"frame": [0], "individual": ["single"], "bodypart": ["snout"], "x": [1.0], "y": [1.0],
+                      "likelihood": [0.9]}).to_parquet(run.dir / "clip.parquet")
+        write_manifest(run.dir / "clip.toml", {"run_id": "clip", "inputs": [str(d / "raw" / "clip.mp4")]})
+        (run.dir / "clip.mp4").write_bytes(b"x" * 1000)
+        run.finish(outputs=[str(run.dir / "clip.parquet")])
+        code, out = _run(["purge", "--labeled-videos", "--yes", "--project", str(proj.root)])
+        assert code == 0 and "removed 1 labeled video(s) of 1 run(s), 1.0 kB" in out, out
+        assert not (run.dir / "clip.mp4").exists() and (run.dir / "clip.parquet").is_file()
+        assert (run.dir / "clip.toml").is_file()
+
+        # a run whose --out was the videos' own folder: the source video is never taken for a labeled one
+        source = d / "raw2"
+        source.mkdir()
+        (source / "clip.mp4").write_bytes(b"video")
+        other = proj.new_run("analyze")
+        pd.DataFrame({"frame": [0], "individual": ["single"], "bodypart": ["snout"], "x": [1.0], "y": [1.0],
+                      "likelihood": [0.9]}).to_parquet(source / "clip.parquet")
+        write_manifest(source / "clip.toml", {"run_id": "clip", "inputs": [str(source / "clip.mp4")]})
+        other.finish(outputs=[str(source / "clip.parquet")])
+        code, out = _run(["purge", "--labeled-videos", "--yes", "--project", str(proj.root)])
+        assert code == 0 and "no labeled videos" in out and (source / "clip.mp4").is_file()
+
+
 def test_both_at_once_are_confirmed_together():
     with tempfile.TemporaryDirectory() as d:
         d = Path(d)

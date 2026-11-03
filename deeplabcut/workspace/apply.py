@@ -4,8 +4,13 @@
 """Applying a model to a video -- the project-less inference path.
 
 This is the formalization of the observation that you do not need a project to
-run a model: given a :class:`ModelBundle` and a video, produce a tidy
-``pose.parquet`` plus a ``run.toml`` provenance record. Under the hood it builds
+run a model: given a :class:`ModelBundle` and a video, produce a tidy pose
+parquet plus a provenance record. In a run (or ``--out``) directory a video's
+files are named after it: ``<stem>.parquet`` (the pose), ``<stem>.toml`` (the
+record) and, with a labeled video, ``<stem>.mp4``. Runs written before that kept
+each video in a folder of its own, as ``<slug>/pose.parquet``, ``run.toml`` and
+``labeled.mp4``; :func:`pose_record_path` and :func:`pose_labeled_path` find the
+companions of a pose in either layout. Under the hood it builds
 runners from the bundle and calls the existing, already-project-less
 ``deeplabcut.pose_estimation_pytorch.video_inference``.
 
@@ -24,7 +29,6 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from . import ids
 from .manifest import write_manifest
 from .schema import SCHEMA_VERSION, RunManifest, now_iso
 from .util import code_version, files_log, shown
@@ -39,6 +43,10 @@ __all__ = [
     "collect_videos",
     "apply_to_video",
     "apply_to_videos",
+    "run_pose_path",
+    "pose_record_path",
+    "pose_labeled_path",
+    "check_run_outputs",
 ]
 
 #: Video file extensions recognized when expanding directories / globs.
@@ -131,6 +139,55 @@ def write_pose_parquet(df, path: str | Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path, index=False)
     return path
+
+
+#: a pose file in a folder of its own: how runs laid out their videos before
+LEGACY_POSE = "pose.parquet"
+
+
+def run_pose_path(out_root: str | Path, video: str | Path) -> Path:
+    """Where a run (or ``--out``) puts the pose of ``video``: ``<out_root>/<stem>.parquet``."""
+    return Path(out_root) / f"{Path(video).stem}.parquet"
+
+
+def pose_record_path(pose: str | Path) -> Path:
+    """The provenance record of a run's pose: ``<stem>.toml`` (``run.toml`` for a legacy ``pose.parquet``)."""
+    pose = Path(pose)
+    return pose.with_name("run.toml") if pose.name == LEGACY_POSE else pose.with_suffix(".toml")
+
+
+def pose_labeled_path(pose: str | Path) -> Path:
+    """The labeled video of a run's pose: ``<stem>.mp4`` (``labeled.mp4`` for a legacy ``pose.parquet``)."""
+    pose = Path(pose)
+    return pose.with_name("labeled.mp4") if pose.name == LEGACY_POSE else pose.with_suffix(".mp4")
+
+
+def check_run_outputs(videos, out_root: str | Path | None, *, labeled_video: bool = True) -> None:
+    """Refuse videos whose files would collide in ``out_root`` (``None``: a new run directory).
+
+    ``labeled_video`` says whether labeled videos will be written as well.
+
+    Raises:
+        ValueError: if two videos share a file name stem, a video is named ``run``
+            (its record would replace the run's own ``run.toml``), or a labeled
+            video would be written over its source video (``--out`` its own folder).
+    """
+    problems: list[str] = []
+    by_stem: dict[str, list[Path]] = {}
+    for video in map(Path, videos):
+        by_stem.setdefault(video.stem, []).append(video)
+        if video.stem == "run":
+            problems.append(f"{video}: a video named 'run' would replace the run's own run.toml; rename it")
+        labeled = pose_labeled_path(run_pose_path(out_root, video)) if out_root is not None else None
+        if labeled_video and labeled is not None and labeled.resolve() == video.resolve():
+            problems.append(f"{video}: its labeled video would be written over it; give another --out "
+                            "or use --beside-video")
+    for stem, same in by_stem.items():
+        if len(same) > 1:
+            problems.append(f"{len(same)} videos are named {stem} ({', '.join(map(str, same))}); their files "
+                            "would overwrite each other -- apply them in separate runs")
+    if problems:
+        raise ValueError("\n".join(problems))
 
 
 #: Suffix for pose files written next to their source video (``--beside-video``).
@@ -286,11 +343,9 @@ def _infer_to_df(bundle, video, pose_runner, detector_runner, *, cropping):
 
 def _write_video_outputs(df, video, out_dir, bundle, *, snapshot, batch_size, device, cropping, started,
                          pcutoff=None):
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    pose_path = write_pose_parquet(df, out_dir / "pose.parquet")
+    pose_path = write_pose_parquet(df, run_pose_path(out_dir, video))
     run = RunManifest(
-        run_id=out_dir.name,
+        run_id=Path(video).stem,
         kind="analyze",
         status="finished",
         started=started,
@@ -302,7 +357,7 @@ def _write_video_outputs(df, video, out_dir, bundle, *, snapshot, batch_size, de
         params={"batch_size": batch_size, "device": device, "cropping": cropping, "pcutoff": pcutoff},
         code_version=code_version(),
     )
-    write_manifest(out_dir / "run.toml", run.to_dict())
+    write_manifest(pose_record_path(pose_path), run.to_dict())
     return pose_path
 
 
@@ -325,16 +380,17 @@ def apply_to_video(
     runners=None,
     display=None,
 ):
-    """Run a :class:`ModelBundle` on one video, writing ``pose.parquet`` + ``run.toml``.
+    """Run a :class:`ModelBundle` on one video, writing its pose and record into ``out_dir``.
 
+    The files are named after the video: ``<stem>.parquet`` and ``<stem>.toml``.
     Needs no project. Requires torch at call time (via the runner + video
-    inference). Returns the path to the written ``pose.parquet`` (or the
+    inference). Returns the path to the written pose parquet (or the
     in-memory DataFrame when ``write=False``). With ``beside_video=True`` the
     pose is written as ``<video-stem>.fdlc.parquet`` next to the source video,
     together with a ``<video-stem>.fdlc.toml`` sidecar (provenance, bodyparts, and
     ``skeleton`` edges), and no run directory is created. With
-    ``labeled_video=True`` an annotated ``.fdlc.mp4`` (beside) / ``labeled.mp4``
-    (run dir) is also rendered, styled by ``display`` (a project's ``[display]``
+    ``labeled_video=True`` an annotated ``.fdlc.mp4`` (beside) / ``<stem>.mp4``
+    (``out_dir``) is also rendered, styled by ``display`` (a project's ``[display]``
     table) when given. Pass ``runners`` (from :func:`apply_to_videos`) to reuse a
     runner already built for this bundle.
     """
@@ -369,10 +425,10 @@ def apply_to_video(
         pcutoff=pcutoff,
     )
     files_log.info("  pose     %s (%d frame(s))", shown(pose_path), df["frame"].nunique() if len(df) else 0)
-    files_log.info("  record   %s", shown(Path(out_dir) / "run.toml"))
+    files_log.info("  record   %s", shown(pose_record_path(pose_path)))
     if labeled_video:
-        _render_labeled(video, df, Path(out_dir) / "labeled.mp4", bundle, skeleton, pcutoff, display)
-        files_log.info("  labeled  %s", shown(Path(out_dir) / "labeled.mp4"))
+        _render_labeled(video, df, pose_labeled_path(pose_path), bundle, skeleton, pcutoff, display)
+        files_log.info("  labeled  %s", shown(pose_labeled_path(pose_path)))
     return pose_path
 
 
@@ -396,14 +452,18 @@ def apply_to_videos(
 ) -> dict[str, Path | None]:
     """Label several videos with one bundle, building the runner **once**.
 
-    Each video's outputs are written to ``out_root/<video-stem>/pose.parquet``
-    (plus ``run.toml``). With ``beside_video=True`` each pose is instead written
-    as ``<video-stem>.fdlc.parquet`` next to its source video and ``out_root`` is
-    ignored. Returns ``{video_path: pose_parquet_path}``; on a per-video failure,
-    ``on_error="skip"`` records ``None`` and continues, while ``on_error="raise"``
-    (default) re-raises.
+    Each video's outputs are written into ``out_root`` as ``<video-stem>.parquet``
+    and ``<video-stem>.toml`` (and ``<video-stem>.mp4`` with ``labeled_video``); videos
+    whose files would collide are refused first (:func:`check_run_outputs`). With
+    ``beside_video=True`` each pose is instead written as ``<video-stem>.fdlc.parquet``
+    next to its source video and ``out_root`` is ignored. Returns
+    ``{video_path: pose_parquet_path}``; on a per-video failure, ``on_error="skip"``
+    records ``None`` and continues, while ``on_error="raise"`` (default) re-raises.
     """
     out_root = Path(out_root)
+    videos = [Path(v) for v in videos]
+    if not beside_video:
+        check_run_outputs(videos, out_root, labeled_video=labeled_video)
     _report_bundle(bundle, snapshot, detector_snapshot)
     runners = _build_runners(
         bundle, snapshot=snapshot, detector_snapshot=detector_snapshot,
@@ -411,8 +471,7 @@ def apply_to_videos(
     )
     results: dict[str, Path | None] = {}
     for video in videos:
-        video = Path(video)
-        out_dir = None if beside_video else out_root / ids.slugify(video.stem)
+        out_dir = None if beside_video else out_root
         try:
             results[str(video)] = apply_to_video(
                 bundle, video, out_dir,

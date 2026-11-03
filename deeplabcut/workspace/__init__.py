@@ -18,8 +18,8 @@ Typical use::
     # A trained model is a portable bundle -- no project required to run it:
     bundle = ws.ModelBundle.open("/models/20260707-141530-a1b9c2")
     run = proj.new_run("analyze", model_id=bundle.card.model_id, inputs=[vid])
-    ws.apply_to_video(bundle, proj.layout.video_media(vid), run.video_dir(vid))
-    run.finish(outputs=["pose.parquet"])
+    pose = ws.apply_to_video(bundle, proj.layout.video_media(vid), run.dir)   # -> run.dir/video.parquet
+    run.finish(outputs=[str(pose)])
 """
 from __future__ import annotations
 
