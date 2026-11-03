@@ -79,14 +79,21 @@ class Layout:
             raise ValueError(f"video kind must be one of {self.VIDEO_KINDS}, got {kind!r}")
         return self.videos_dir / kind
 
-    def video_dir(self, video_id: str, kind: str = "original") -> Path:
-        return self.videos_kind_dir(kind) / video_id
-
+    # A video's files sit side by side in its kind's folder, named by its id:
+    # ``<kind>/<video_id>.<ext>`` (the media) and ``<kind>/<video_id>.toml`` (the record).
     def video_media(self, video_id: str, suffix: str = ".mp4", kind: str = "original") -> Path:
-        return self.video_dir(video_id, kind) / f"video{suffix}"
+        return self.videos_kind_dir(kind) / f"{video_id}{suffix}"
 
     def video_toml(self, video_id: str, kind: str = "original") -> Path:
-        return self.video_dir(video_id, kind) / "video.toml"
+        return self.videos_kind_dir(kind) / f"{video_id}.toml"
+
+    #: the record in a video folder of the layout before ``fdlc upgrade`` (``<kind>/<id>/video.toml``)
+    LEGACY_VIDEO_TOML = "video.toml"
+
+    def legacy_video_dirs(self, kind: str = "original") -> list[Path]:
+        """Video folders of the layout before ``fdlc upgrade``: ``<kind>/<id>/`` with a ``video.toml``."""
+        d = self.videos_kind_dir(kind)
+        return sorted(p for p in d.iterdir() if (p / self.LEGACY_VIDEO_TOML).is_file()) if d.is_dir() else []
 
     # -- sources: annotations --------------------------------------------
     @property

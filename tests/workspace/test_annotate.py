@@ -54,7 +54,7 @@ def test_resolve_media_finds_registered_video():
     with tempfile.TemporaryDirectory() as d:
         proj, vid = _project_with_video(Path(d))
         media = frames_mod.resolve_media(proj, vid)
-        assert media.is_file() and media.name.startswith("video")
+        assert media.is_file() and media.name == f"{vid}{media.suffix}"
 
 
 def test_resolve_media_rejects_unregistered():
@@ -602,7 +602,7 @@ def test_extract_overwrite_never_writes_through_a_link():
 
 
 def test_resolve_media_ignores_video_toml():
-    """``video.toml`` sits beside the media; it must never be mistaken for it."""
+    """``<id>.toml`` sits beside the media; it must never be mistaken for it."""
     with tempfile.TemporaryDirectory() as d:
         d = Path(d)
         proj = Project.create(d / "ws", task="reach", bodyparts=BODYPARTS)
@@ -612,7 +612,7 @@ def test_resolve_media_ignores_video_toml():
         late = d / "raw" / "late.webm"                                       # sorts after "toml"
         late.write_bytes(src.read_bytes())
         vid = proj.add_video(late, link="symlink")
-        assert frames_mod.resolve_media(proj, vid).name == "video.webm"
+        assert frames_mod.resolve_media(proj, vid).name == "late.webm"
 
 
 # ------------------------------------------------ extract --match-original

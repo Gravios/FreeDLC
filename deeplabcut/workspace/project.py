@@ -98,20 +98,36 @@ class Project:
         return cls(layout.root, config)
 
     @classmethod
-    def open(cls, root: str | Path) -> Project:
+    def open(cls, root: str | Path, *, legacy_ok: bool = False) -> Project:
         """Open an existing project.
+
+        A project whose videos are still in the folder-per-video layout is refused
+        unless ``legacy_ok`` (what ``fdlc upgrade`` opens it with), because its
+        videos would not be found.
 
         Raises:
             FileNotFoundError: if no ``project.toml`` is found under ``root``.
+            ValueError: if the project needs ``fdlc upgrade`` first, or its
+                ``project.toml`` is invalid.
         """
         layout = Layout(root)
         if not layout.project_toml.exists():
             raise FileNotFoundError(f"no project.toml under {layout.root}")
         config = ProjectConfig.from_dict(read_manifest(layout.project_toml))
-        return cls(layout.root, config)
+        project = cls(layout.root, config)
+        if not legacy_ok and project.needs_upgrade():
+            raise ValueError(
+                f"{layout.root} keeps its videos in the old layout (sources/videos/<kind>/<id>/video.*); "
+                f"run `fdlc upgrade {layout.root}` to convert it"
+            )
+        return project
+
+    def needs_upgrade(self) -> bool:
+        """True while any video is still in the folder-per-video layout (see ``fdlc upgrade``)."""
+        return any(self.layout.legacy_video_dirs(kind) for kind in self.layout.VIDEO_KINDS)
 
     @classmethod
-    def find(cls, start: str | Path = ".") -> Project:
+    def find(cls, start: str | Path = ".", *, legacy_ok: bool = False) -> Project:
         """Open the project ``start`` is in: the nearest folder at or above it with a ``project.toml``.
 
         Raises:
@@ -120,7 +136,7 @@ class Project:
         here = Path(start).resolve()
         for folder in (here, *here.parents):
             if (folder / "project.toml").is_file():
-                return cls.open(folder)
+                return cls.open(folder, legacy_ok=legacy_ok)
         raise FileNotFoundError(
             f"no project.toml in {here} or any folder above it; "
             "run this inside a project, or give the project's path"
@@ -145,10 +161,10 @@ class Project:
 
         ``kind`` selects the shelf: ``"original"`` (default) for full-resolution
         reference footage, or ``"processed"`` for the downscaled video the model
-        trains on. The media is materialized under
-        ``sources/videos/<kind>/<video_id>/`` according to ``link``: ``"symlink"``
-        (default), ``"copy"``, or ``"reference"`` (record the path only). A
-        ``video.toml`` provenance record is always written, with width/height/fps
+        trains on. The media is materialized as ``sources/videos/<kind>/<video_id>.<ext>``
+        according to ``link``: ``"symlink"`` (default), ``"copy"``, or ``"reference"``
+        (record the path only). A ``<video_id>.toml`` provenance record is always
+        written beside it, with width/height/fps
         probed when a video backend is available -- these dimensions are what the
         original/processed scale is later derived from.
 
@@ -163,10 +179,12 @@ class Project:
         if not src.is_file():
             raise FileNotFoundError(f"video not found: {src}")
         vid = video_id or ids.video_id_from_path(src)
+        if not vid or "." in vid or "/" in vid or "\\" in vid:
+            raise ValueError(f"video id {vid!r} must not be empty or contain '.', '/' or '\\' "
+                             "(it names the video's files: <id>.mp4, <id>.toml)")
         if self.has_video(vid, kind) and not exist_ok:
             raise FileExistsError(f"{kind} video id {vid!r} already registered")
 
-        vdir = self.layout.video_dir(vid, kind)
         media = self.layout.video_media(vid, src.suffix or ".mp4", kind)
         # Re-registering replaces whatever media the id had. Refuse when the source
         # is that media itself (a copy living in the workspace): replacing it would
@@ -174,7 +192,7 @@ class Project:
         previous = self.video_media_files(vid, kind)
         if any(not p.is_symlink() and same_file(p, src) for p in previous):
             raise ValueError(f"{src} is already this project's own media for {kind} video {vid!r}")
-        vdir.mkdir(parents=True, exist_ok=True)
+        self.layout.videos_kind_dir(kind).mkdir(parents=True, exist_ok=True)
         for stale in previous:
             if stale != media or link == "reference":
                 stale.unlink()  # another extension, or media a reference must not keep
@@ -229,15 +247,16 @@ class Project:
         return pairs, problems
 
     def video_media_files(self, video_id: str, kind: str = "original") -> list[Path]:
-        """Media materialized under a video's directory (``video.<ext>``), sorted.
+        """A video's materialized media (``<kind>/<video_id>.<ext>``), sorted.
 
         Empty for an unregistered video and for a ``reference``, which records the
-        source path without materializing it. ``video.toml``, the provenance record
-        beside the media, is not media.
+        source path without materializing it. ``<video_id>.toml``, the provenance
+        record beside the media, is not media. Ids hold no dots, so another id's
+        files never match.
         """
-        vdir = self.layout.video_dir(video_id, kind)
+        d = self.layout.videos_kind_dir(kind)
         toml = self.layout.video_toml(video_id, kind)
-        return sorted(p for p in vdir.glob("video.*") if p != toml) if vdir.is_dir() else []
+        return sorted(p for p in d.glob(f"{video_id}.*") if p != toml) if d.is_dir() else []
 
     def has_video(self, video_id: str, kind: str = "original") -> bool:
         return self.layout.video_toml(video_id, kind).exists()
@@ -245,7 +264,7 @@ class Project:
     def videos(self, kind: str = "original") -> list[str]:
         """Registered video ids for ``kind`` (default: original), sorted."""
         d = self.layout.videos_kind_dir(kind)
-        return sorted(p.name for p in d.iterdir() if (p / "video.toml").exists()) if d.exists() else []
+        return sorted(p.stem for p in d.glob("*.toml") if p.is_file()) if d.is_dir() else []
 
     def video_record(self, video_id: str, kind: str = "original") -> VideoRecord:
         return VideoRecord.from_dict(read_manifest(self.layout.video_toml(video_id, kind)))

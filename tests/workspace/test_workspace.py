@@ -77,8 +77,9 @@ def test_manifest_roundtrip_drops_none():
 def test_layout_paths():
     lay = ws.Layout("/proj")
     assert lay.project_toml == Path("/proj/project.toml")
-    assert lay.video_media("v1") == Path("/proj/sources/videos/original/v1/video.mp4")
-    assert lay.video_media("v1", kind="processed") == Path("/proj/sources/videos/processed/v1/video.mp4")
+    assert lay.video_media("v1") == Path("/proj/sources/videos/original/v1.mp4")
+    assert lay.video_media("v1", kind="processed") == Path("/proj/sources/videos/processed/v1.mp4")
+    assert lay.video_toml("v1") == Path("/proj/sources/videos/original/v1.toml")
     assert lay.frames_dir("v1") == Path("/proj/sources/annotations/v1/frames/original")
     assert lay.frames_dir("v1", "processed") == Path("/proj/sources/annotations/v1/frames/processed")
     assert lay.staging_dataset_dir("v1") == Path("/proj/.annotate/v1/labeled-data/v1")
@@ -201,7 +202,7 @@ def test_add_video_reregistration_never_damages_sources():
         proj.add_video(second, video_id="v", link="copy", exist_ok=True)
         assert first.read_bytes() == b"first"
         media = proj.video_media_files("v")
-        assert [m.name for m in media] == ["video.avi"]          # the stale video.mp4 is gone
+        assert [m.name for m in media] == ["v.avi"]              # the stale v.mp4 is gone
         assert not media[0].is_symlink() and media[0].read_bytes() == b"second"
 
         # the workspace's own copy cannot be registered onto itself

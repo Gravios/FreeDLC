@@ -201,15 +201,15 @@ def _is_project(path) -> bool:
     return (path / "project.toml").is_file() or (path.name == "project.toml" and path.is_file())
 
 
-def _open_project(project_arg: str | None):
+def _open_project(project_arg: str | None, *, legacy_ok: bool = False):
     """The project named by a CLI argument, or, when it is left out, the one around the cwd."""
     try:
         if project_arg is None:
-            return Project.find(Path.cwd())
+            return Project.find(Path.cwd(), legacy_ok=legacy_ok)
         root = Path(project_arg)
         if root.name == "project.toml":
             root = root.parent
-        return Project.open(root)
+        return Project.open(root, legacy_ok=legacy_ok)
     except (FileNotFoundError, ValueError) as err:  # ValueError: an invalid project.toml
         raise CommandError(str(err)) from err
 
@@ -479,6 +479,33 @@ def cmd_migrate(args) -> int:
     print(f"  videos: {len(project.videos())}  "
           f"annotated: {len(project.annotated_videos())}  "
           f"models: {len(project.models())}")
+    return 0
+
+
+def cmd_upgrade(args) -> int:
+    """Convert a project to the current layout: lists the moves first; ``--yes`` makes them."""
+    from .upgrade import apply_upgrade, plan_upgrade
+
+    project = _open_project(args.project, legacy_ok=True)
+    plan = plan_upgrade(project)
+    if not plan.folders and not plan.problems:
+        print(f"{project.root} is up to date")
+        return 0
+    for src, dst in plan.moves:
+        print(f"  {src.relative_to(project.root)} -> {dst.relative_to(project.root)}")
+    if plan.problems:
+        print("cannot upgrade; nothing was moved:")
+        for problem in plan.problems:
+            print(f"  ! {problem}")
+        return 2
+    if not args.yes:
+        print(f"nothing moved yet: add --yes to move the files of {plan.n_videos} video(s) into "
+              "sources/videos/<kind>/<id>.<ext> and <id>.toml")
+        return 0
+    left = apply_upgrade(plan)
+    print(f"upgraded {project.root}: {plan.n_videos} video(s), {len(plan.moves)} file(s) moved")
+    for folder in left:
+        print(f"  ! {folder} still holds files and was left in place")
     return 0
 
 
@@ -1158,6 +1185,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-models", action="store_true")
     p.add_argument("--no-annotations", action="store_true")
     p.set_defaults(func=cmd_migrate)
+
+    p = sub.add_parser("upgrade", help="convert a project to the current layout (lists the moves; --yes makes them)")
+    p.add_argument("project", nargs="?", default=None, help=PROJECT_HELP)
+    p.add_argument("--yes", action="store_true", help="move the files; without it, only list the moves")
+    p.set_defaults(func=cmd_upgrade)
 
     p = sub.add_parser("info", help="summarize a workspace project")
     p.add_argument("project", nargs="?", default=None, help=PROJECT_HELP)

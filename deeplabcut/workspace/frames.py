@@ -77,8 +77,8 @@ def resolve_media(project, video_id: str, kind: str = "original") -> Path:
     src = Path(record.source_path)
     if src.is_file():
         return src
-    vdir = project.layout.video_dir(video_id, kind)
-    raise FileNotFoundError(f"no media on disk for {kind} video {video_id!r} (looked in {vdir} and {src})")
+    looked = project.layout.video_media(video_id, ".*", kind)
+    raise FileNotFoundError(f"no media on disk for {kind} video {video_id!r} (looked for {looked} and {src})")
 
 
 def _frame_indices_uniform(total: int, n: int) -> list[int]:

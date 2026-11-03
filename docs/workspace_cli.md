@@ -39,6 +39,7 @@ Installation is described in the [README](../README.md#install).
 | `apply <videos...>` | run a model on videos (`--project` + `--model-id`, or `--model <bundle>`) |
 | `label <video>` | render a labeled video from a pose file |
 | `track <pose parquet>` | link multi-animal detections into identities across frames |
+| `upgrade [<project>]` | convert a project made before to the current layout (see "Upgrading a project") |
 | `export <bundle>` | write the pose model as ONNX (see [onnx_export.md](onnx_export.md)) |
 
 Every command has `--help`.
@@ -67,15 +68,16 @@ The examples on this page name the project (`ws`) so they work from anywhere.
 <project>/
 |- project.toml
 |- sources/
-|  |- videos/original/<video_id>/video.<ext>  (+ video.toml)
-|  |- videos/processed/<video_id>/video.<ext> (+ video.toml)
+|  |- videos/original/<video_id>.<ext>   (+ <video_id>.toml, its record)
+|  |- videos/processed/<video_id>.<ext>  (+ <video_id>.toml)
 |  '- annotations/<video_id>/
 |     |- frames/original/     frames you annotate on
 |     |- frames/processed/    the same frames from the processed video
 |     |- labels.parquet       the annotations
 |     '- labels.toml          which pixel space labels.parquet is in
 |- models/<model_id>/         portable model bundles (model.toml, pose.yaml, snapshots/, train_frames.txt)
-|- runs/<kind>/<run_id>/      one directory per train / evaluate / analyze run
+|- runs/<kind>/<run_id>/      one directory per train / evaluate / analyze run;
+|                             an analyze run holds <video>.parquet, .toml, .mp4 per video
 |- derived/                   reserved; nothing writes here yet
 '- .annotate/<video_id>/      staging for the annotator (see "Annotate")
 ```
@@ -832,6 +834,25 @@ A skeleton config names a rig's markers, its skeleton edges and its kinematic
 tree (segments), in the table layout mufasa's `project.toml` uses.
 `--skeleton-config` takes the markers and edges from one; `export-skeleton`
 writes one from a project, to `.fdlc/skeletons/` by default.
+
+## Upgrading a project
+
+```bash
+fdlc upgrade              # list the moves
+fdlc upgrade --yes        # make them
+```
+
+Projects made before kept every registered video in a folder of its own
+(`sources/videos/<kind>/<video_id>/video.<ext>` and `video.toml`). Now a video's
+files sit side by side, named by its id: `sources/videos/<kind>/<video_id>.<ext>`
+and `<video_id>.toml`. Every command refuses a project in the old layout and says
+to run `fdlc upgrade`, which moves the files into place.
+
+Nothing is moved while anything is in the way -- another file in a video's
+folder, or a file already at the new name; `upgrade` lists them instead. A
+symlink is moved as a link, so the source videos it points at are never touched.
+Annotations, models and runs stay as they are. Runs of `apply` made before keep
+their folder per video and are still read as they are.
 
 ## Legacy projects
 
