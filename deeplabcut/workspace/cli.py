@@ -171,7 +171,7 @@ def cmd_preprocess(args) -> int:
     if not root.is_dir():
         print(f"not a folder: {root}")
         return 2
-    jobs = plan_jobs(root, config, out=args.out)
+    jobs = plan_jobs(root, config, other_configs=[name for name, _, _ in available_configs()])
     print(f"config {config.name}: {describe(config)}")
     todo = [job for job in jobs if not job.done]
     for job in jobs:
@@ -1246,10 +1246,10 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("name", nargs="?", help="skeleton config to describe (default: list every name)")
     q.set_defaults(func=cmd_list_skeletons)
 
-    p = sub.add_parser("preprocess", help="downscale every video in a folder tree for a model (see --config)")
+    p = sub.add_parser("preprocess", help="downscale every video in a folder tree for a model, "
+                       "as <base>-<config>.mp4 beside each (see --config)")
     p.add_argument("root", nargs="?", metavar="DIR", help="folder searched recursively for videos")
     p.add_argument("--config", help="named configuration, or a .toml file (see `fdlc list preprocess`)")
-    p.add_argument("--out", metavar="DIR", help="write into DIR, mirroring the subfolders (default: beside each video)")
     p.add_argument("-n", "--dry-run", action="store_true", dest="dry_run", help="list what would be encoded")
     p.add_argument("--no-check", action="store_true", dest="no_check",
                    help="skip comparing each output's frame count with its source's (saves reading both again)")

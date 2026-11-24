@@ -99,19 +99,23 @@ def test_configs_are_found_local_then_user_then_bundled():
 def test_what_is_encoded_and_where():
     with _sandbox() as d:
         root = d / "data"
-        for rel in ("cage A/K3_cam.h264", "cage A/K3_cam_640x360.mp4", "b/session.MP4", "b/session-triplet.mp4",
-                    "b/old.fdlc.mp4", "b/x_640x360.part.mp4", "b/notes.txt", "b/deep/c.avi"):
+        for rel in ("cage A/K3_cam.h264", "cage A/K3_cam-triplet.mp4", "b/session.MP4", "b/session-cam30.mp4",
+                    "b/old.fdlc.mp4", "b/x-triplet.part.mp4", "b/y_640x360.mp4", "b/notes.txt", "b/deep/c.avi"):
             (root / rel).parent.mkdir(parents=True, exist_ok=True)
             (root / rel).write_bytes(b"v")
         config = pp.load_config("triplet")
-        jobs = pp.plan_jobs(root, config)
-        assert [(j.source.relative_to(root).as_posix(), j.output.name, j.raw, j.done) for j in jobs] == [
-            ("b/deep/c.avi", "c_640x360.mp4", False, False),
-            ("b/session.MP4", "session_640x360.mp4", False, False),
-            ("cage A/K3_cam.h264", "K3_cam_640x360.mp4", True, True),               # already there
+        jobs = pp.plan_jobs(root, config, other_configs=["cam30"])
+        assert [(j.source.relative_to(root).as_posix(), j.output.relative_to(root).as_posix(), j.raw, j.done)
+                for j in jobs] == [
+            ("b/deep/c.avi", "b/deep/c-triplet.mp4", False, False),
+            ("b/session.MP4", "b/session-triplet.mp4", False, False),
+            ("cage A/K3_cam.h264", "cage A/K3_cam-triplet.mp4", True, True),          # already there
         ]
-        raw = pp.plan_jobs(root, config.with_changes(raw_only=True), out=d / "out")
-        assert [j.output for j in raw] == [d / "out" / "cage A" / "K3_cam_640x360.mp4"]
+        # another configuration's outputs are inputs only when it is not known
+        assert "b/session-cam30.mp4" in [j.source.relative_to(root).as_posix() for j in pp.plan_jobs(root, config)]
+        raw = pp.plan_jobs(root, config.with_changes(raw_only=True))
+        assert [j.output for j in raw] == [root / "cage A" / "K3_cam-triplet.mp4"]
+        assert pp.output_path(root / "a.h264", "cam30") == root / "a-cam30.mp4"
 
         cmd = pp.ffmpeg_command(raw[0], config)
         assert cmd[cmd.index("-i") - 4:cmd.index("-i")] == ["-fflags", "+genpts", "-r", "25"]
@@ -129,7 +133,7 @@ def test_the_cli_lists_saves_and_plans():
         code, out = _run(["preprocess", "data"])
         assert code == 2 and "--config NAME (available: triplet" in out
         code, out = _run(["preprocess", "--config", "triplet", "-n", "data"])
-        assert code == 0 and "would encode (raw): data/a.h264 -> data/a_640x360.mp4" in out
+        assert code == 0 and "would encode (raw): data/a.h264 -> data/a-triplet.mp4" in out
         assert "dry run: 1 to encode, 0 already done" in out
         code, out = _run(["preprocess", "--config", "triplet", "--fps", "30", "--crf", "16", "--save-config", "cam30"])
         assert code == 0 and "saved config cam30" in out
@@ -150,12 +154,14 @@ def test_a_raw_stream_is_encoded_frame_for_frame():
         raw.parent.mkdir()
         subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=2",
                         "-c:v", "libx264", "-f", "h264", str(raw)], check=True)
-        config = pp.load_config("triplet").with_changes(size="160x120", preset="ultrafast")
-        (job,) = pp.plan_jobs(d / "data", config)
-        ok, message = pp.run_job(job, config)
-        assert ok and message == "50 frames", message
-        assert job.output.is_file() and not list(d.rglob("*.part.mp4"))
-        code, out = _run(["preprocess", "--config", "triplet", "--size", "160x120", "data"])
+        code, out = _run(["preprocess", "--config", "triplet", "--size", "160x120", "--preset", "ultrafast", "data"])
+        assert code == 0 and "50 frames" in out and "done: 1 encoded, 0 skipped" in out, out
+        out_file = d / "data" / "cam-triplet.mp4"
+        assert out_file.is_file() and not list(d.rglob("*.part.mp4"))
+        size = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height", "-of", "csv=p=0",
+                               str(out_file)], capture_output=True, text=True, check=True).stdout.strip()
+        assert size == "160,120"
+        code, out = _run(["preprocess", "--config", "triplet", "data"])       # the output is not an input
         assert code == 0 and "skip (exists)" in out and "done: 0 encoded, 1 skipped" in out, out
 
 

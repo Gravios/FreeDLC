@@ -87,13 +87,13 @@ The examples on this page name the project (`ws`) so they work from anywhere.
 
 A model works best on videos made the way its training videos were: the same
 size, from the same kind of file. `fdlc preprocess` prepares a whole folder tree
-at once, writing `<name>_640x360.mp4` beside each video (or, with `--out DIR`,
-into a copy of the folder structure):
+at once. Each video is encoded in place, named after the configuration used:
+`K3_cam.h264` with `--config triplet` gives `K3_cam-triplet.mp4` beside it.
 
 ```bash
 fdlc preprocess --config triplet -n /cloud/server/projects/altahini/stanford_cages2   # list
 fdlc preprocess --config triplet /cloud/server/projects/altahini/stanford_cages2      # encode
-fdlc apply /cloud/server/projects/altahini/stanford_cages2/*/*_640x360.mp4 --model-id <model_id> --beside-video
+fdlc apply /cloud/server/projects/altahini/stanford_cages2/*/*-triplet.mp4 --model-id <model_id> --beside-video
 ```
 
 Raw H.264/H.265 streams (`.h264`, `.264`, `.h265`, `.hevc`), as Raspberry Pi
@@ -106,8 +106,10 @@ timing and are only scaled.
 It is safe to re-run: finished videos are skipped, and an interrupted encode
 leaves nothing behind. Each output's frame count is checked against its
 source's, which reads both once more (`--no-check` skips that); a difference is
-reported as `CHECK` and the output kept. Outputs, labeled videos (`*.fdlc.*`) and
-triplet videos (`*-triplet.*`) are never taken as input. Needs `ffmpeg` and
+reported as `CHECK` and the output kept. A file named after any known
+configuration (`*-triplet.mp4`, ...), labeled videos (`*.fdlc.*`) and unfinished
+`.part.mp4` files are never taken as input, so outputs are not encoded again.
+`fdlc videos --register` matches `K3_cam-triplet.mp4` to the original `K3_cam`. Needs `ffmpeg` and
 `ffprobe` on the PATH.
 
 ### Configurations

@@ -4,8 +4,8 @@
 """Prepare a folder tree of videos for a model: ``fdlc preprocess``.
 
 Every video under a folder is downscaled to the size a model was trained on and
-written as plain H.264 MP4, ``<name>_<W>x<H>.mp4`` beside it (or into a copy of
-the folder structure), with every frame kept.
+written as plain H.264 MP4 beside it, named after the configuration used:
+``K3_cam.h264`` with ``triplet`` gives ``K3_cam-triplet.mp4``. Every frame is kept.
 
 *How* a video is encoded is a named **configuration**, a small TOML file::
 
@@ -57,6 +57,7 @@ __all__ = [
     "parse_config",
     "save_config",
     "plan_jobs",
+    "output_path",
     "ffmpeg_command",
     "run_job",
     "count_frames",
@@ -214,25 +215,40 @@ class Job:
         return self.output.is_file()
 
 
-def plan_jobs(root: str | Path, config: PreprocessConfig, *, out: str | Path | None = None) -> list[Job]:
+def output_path(source: str | Path, config_name: str) -> Path:
+    """Where ``source`` encoded with configuration ``config_name`` goes: ``<base>-<config_name>.mp4`` beside it."""
+    source = Path(source)
+    return source.with_name(f"{source.stem}-{config_name}.mp4")
+
+
+def _is_output(name: str, config_names) -> bool:
+    """Whether a file is something this command (or an earlier version of it) wrote."""
+    lower = name.lower()
+    stem = lower.rsplit(".", 1)[0]
+    if stem.endswith(".part") or _OUTPUT.search(lower):
+        return True
+    return any(stem.endswith(f"-{n.lower()}") for n in config_names)
+
+
+def plan_jobs(root: str | Path, config: PreprocessConfig, *, other_configs=()) -> list[Job]:
     """The videos under ``root`` to encode with ``config``, sorted by path.
 
-    Outputs go beside each video, or with ``out`` into ``out`` mirroring the
-    subfolders of ``root``. Outputs (``*_<W>x<H>.mp4``), labeled videos
-    (``*.fdlc.*``) and triplet videos (``*-triplet.*``) are never inputs.
+    Each output goes beside its video as ``<base>-<config name>.mp4``. Outputs of
+    ``config`` and of the configurations named in ``other_configs``, unfinished
+    ``.part`` files, earlier ``*_<W>x<H>.mp4`` outputs and labeled videos
+    (``*.fdlc.*``) are never inputs.
     """
     root = Path(root)
+    names = {config.name, *other_configs}
     jobs = []
     for path in sorted(p for p in root.rglob("*") if p.is_file()):
-        lower = path.name.lower()
-        if _OUTPUT.search(lower) or ".fdlc." in lower or "-triplet." in lower:
+        if _is_output(path.name, names) or ".fdlc." in path.name.lower():
             continue
         suffix = path.suffix.lower()
         raw = suffix in RAW_SUFFIXES
         if not raw and (suffix not in CONTAINER_SUFFIXES or config.raw_only):
             continue
-        folder = (Path(out) / path.parent.relative_to(root)) if out is not None else path.parent
-        jobs.append(Job(source=path, output=folder / f"{path.stem}_{config.size}.mp4", raw=raw))
+        jobs.append(Job(source=path, output=output_path(path, config.name), raw=raw))
     return jobs
 
 
@@ -275,7 +291,7 @@ def run_job(job: Job, config: PreprocessConfig, *, check_frames: bool = True) ->
         if shutil.which(tool) is None:
             raise FileNotFoundError(f"{tool} is not installed or not on PATH")
     job.output.parent.mkdir(parents=True, exist_ok=True)
-    part = job.output.with_name(job.output.stem + ".part.mp4")
+    part = job.output.with_name(job.output.stem + ".part.mp4")  # <base>-<config>.part.mp4
     result = subprocess.run(ffmpeg_command(job, config, part), stdin=subprocess.DEVNULL, check=False)
     if result.returncode != 0:
         part.unlink(missing_ok=True)
