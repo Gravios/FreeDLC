@@ -71,10 +71,13 @@ email = "alexander@deeplabcut.org"
 [project.optional-dependencies]
 # Everything a user might want in one install: `pip install deeplabcut[all]`.
 # (docs is build tooling and is intentionally left out.)
+# fmpose3d is left out too: 0.0.8 and 0.0.9 require numpy<2 (this package requires
+# numpy>=2) and 0.0.10 requires Python<3.13 and torch<2.11, so on a current
+# environment pip finds no version that fits and backtracks until it gives up
+# ("resolution-too-deep"). Ask for `deeplabcut[fmpose3d]` explicitly where it fits.
 all = [
   "deeplabcut[onnx]",
   "deeplabcut[gui]",
-  "deeplabcut[fmpose3d]",
   "deeplabcut[modelzoo]",
   "deeplabcut[wandb]",
 ]

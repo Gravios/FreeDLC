@@ -76,6 +76,9 @@ package; `[gui]` asks for `napari-deeplabcut>=0.3.1`, and a napari-freedlc
 checkout without a release tag reports a lower version, so re-installing
 `FreeDLC[gui]` later puts the PyPI release back. Re-run the last install line if
 that happens. `pip install -e "./FreeDLC[onnx]"` adds what `fdlc export` needs.
+`[all]` includes `[gui]`, so the same holds for it, and it may also move PySide6
+back below 6.10. To re-install FreeDLC itself after pulling changes, leave the
+extras out: `pip install -e ./FreeDLC`.
 
 ## The workspace pipeline
 
