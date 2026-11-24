@@ -119,6 +119,83 @@ def cmd_create(args) -> int:
     return 0
 
 
+def cmd_list_preprocess(args) -> int:
+    from .preprocess import available_configs, describe, load_config
+
+    if args.name:
+        try:
+            config = load_config(args.name)
+        except (FileNotFoundError, ValueError) as err:
+            print(err)
+            return 2
+        print(f"{config.name}: {config.description}" if config.description else config.name)
+        print(f"  {describe(config)}")
+        return 0
+    found = available_configs()
+    if not found:
+        print("no preprocess configs")
+        return 0
+    width = max(len(name) for name, _, _ in found)
+    for name, label, path in found:
+        print(f"{name:<{width}}  {label:<7}  {path}")
+    return 0
+
+
+def cmd_preprocess(args) -> int:
+    from .preprocess import available_configs, describe, load_config, plan_jobs, run_job, save_config
+
+    if args.config is None:
+        names = ", ".join(name for name, _, _ in available_configs()) or "(none)"
+        print(f"say which configuration to use: --config NAME (available: {names}; see `fdlc list preprocess`)")
+        return 2
+    try:
+        config = load_config(args.config).with_changes(
+            size=args.size, fps=args.fps, crf=args.crf, preset=args.preset, scale_flags=args.scale_flags,
+            raw_only=True if args.raw_only else None)
+    except (FileNotFoundError, ValueError) as err:
+        print(err)
+        return 2
+    if args.save_config:
+        try:
+            path = save_config(config, args.save_config)
+        except ValueError as err:
+            print(err)
+            return 2
+        print(f"saved config {args.save_config}: {path}")
+    if args.root is None:
+        if args.save_config:
+            return 0
+        print("say which folder to preprocess: fdlc preprocess --config NAME DIR")
+        return 2
+    root = Path(args.root)
+    if not root.is_dir():
+        print(f"not a folder: {root}")
+        return 2
+    jobs = plan_jobs(root, config, out=args.out)
+    print(f"config {config.name}: {describe(config)}")
+    todo = [job for job in jobs if not job.done]
+    for job in jobs:
+        if job.done:
+            print(f"skip (exists): {job.output}")
+    if args.dry_run:
+        for job in todo:
+            print(f"would encode ({'raw' if job.raw else 'container'}): {job.source} -> {job.output}")
+        print(f"dry run: {len(todo)} to encode, {len(jobs) - len(todo)} already done")
+        return 0
+    ok = failed = 0
+    for i, job in enumerate(todo, 1):
+        print(f"[{i}/{len(todo)}] {job.source} -> {job.output}", flush=True)
+        try:
+            success, message = run_job(job, config, check_frames=not args.no_check)
+        except FileNotFoundError as err:
+            print(err)
+            return 2
+        print(f"  {message}", flush=True)
+        ok, failed = ok + success, failed + (not success)
+    print(f"done: {ok} encoded, {len(jobs) - len(todo)} skipped, {failed} failed or to check")
+    return 0 if failed == 0 else 1
+
+
 def cmd_list_skeletons(args) -> int:
     if not args.name:
         names = skeleton_lib.available_skeletons()
@@ -1161,10 +1238,32 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_create)
 
     p = sub.add_parser("list", help="list saved configurations")
-    listed = p.add_subparsers(dest="what", metavar="{skeletons}", required=True)
+    listed = p.add_subparsers(dest="what", metavar="{skeletons,preprocess}", required=True)
+    q = listed.add_parser("preprocess", help="list the preprocess configs, or show one")
+    q.add_argument("name", nargs="?", help="config to describe (default: list every name)")
+    q.set_defaults(func=cmd_list_preprocess)
     q = listed.add_parser("skeletons", help="list the installed skeleton configs, or show one")
     q.add_argument("name", nargs="?", help="skeleton config to describe (default: list every name)")
     q.set_defaults(func=cmd_list_skeletons)
+
+    p = sub.add_parser("preprocess", help="downscale every video in a folder tree for a model (see --config)")
+    p.add_argument("root", nargs="?", metavar="DIR", help="folder searched recursively for videos")
+    p.add_argument("--config", help="named configuration, or a .toml file (see `fdlc list preprocess`)")
+    p.add_argument("--out", metavar="DIR", help="write into DIR, mirroring the subfolders (default: beside each video)")
+    p.add_argument("-n", "--dry-run", action="store_true", dest="dry_run", help="list what would be encoded")
+    p.add_argument("--no-check", action="store_true", dest="no_check",
+                   help="skip comparing each output's frame count with its source's (saves reading both again)")
+    g = p.add_argument_group("overrides of the configuration")
+    g.add_argument("--size", metavar="WxH", help="output size, even numbers")
+    g.add_argument("--fps", type=float, help="frame rate raw streams are numbered at")
+    g.add_argument("--crf", type=int, help="x264 quality, lower is better")
+    g.add_argument("--preset", help="x264 speed/size trade-off, e.g. fast, slow")
+    g.add_argument("--scale-flags", dest="scale_flags", help="scaler: bicubic, area, lanczos, ...")
+    g.add_argument("--raw-only", action="store_true", dest="raw_only",
+                   help="only raw .h264/.h265 streams; leave container videos alone")
+    p.add_argument("--save-config", metavar="NAME", dest="save_config",
+                   help="save the configuration with these overrides as NAME (~/.config/fdlc/preprocess/)")
+    p.set_defaults(func=cmd_preprocess)
 
     p = sub.add_parser("export-skeleton", help="export a project's skeleton as a named config")
     p.add_argument("project", nargs="?", default=None, help=PROJECT_HELP)

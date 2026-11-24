@@ -101,9 +101,9 @@ Inside a project folder the project argument can be left out: `cd ws && fdlc tra
   choices it involves, and troubleshooting.
 - [scripts/reduce_videos.sh](scripts/reduce_videos.sh) -- makes the downscaled
   copies with ffmpeg, frame for frame.
-- [scripts/preprocess_videos.sh](scripts/preprocess_videos.sh) -- the same for a
-  whole folder tree, including raw `.h264` camera streams, which need their
-  frames renumbered (see "Videos for applying a model" in the guide).
+- `fdlc preprocess --config triplet DIR` -- the same for a whole folder tree,
+  including raw `.h264` camera streams, which need their frames renumbered; named
+  configurations hold the settings (see "Videos for applying a model" in the guide).
 - [docs/onnx_export.md](docs/onnx_export.md) -- running a model without torch:
   what exists (`fdlc export`) and what is planned.
 

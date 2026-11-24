@@ -39,6 +39,7 @@ Installation is described in the [README](../README.md#install).
 | `apply <videos...>` | run a model on videos (`--project` + `--model-id`, or `--model <bundle>`) |
 | `label <video>` | render a labeled video from a pose file |
 | `track <pose parquet>` | link multi-animal detections into identities across frames |
+| `preprocess --config NAME <dir>` | downscale every video in a folder tree for a model (see "Videos for applying a model") |
 | `upgrade [<project>]` | convert a project made before to the current layout (see "Upgrading a project") |
 | `export <bundle>` | write the pose model as ONNX (see [onnx_export.md](onnx_export.md)) |
 
@@ -85,28 +86,58 @@ The examples on this page name the project (`ws`) so they work from anywhere.
 ## Videos for applying a model
 
 A model works best on videos made the way its training videos were: the same
-size, from the same kind of file. `scripts/preprocess_videos.sh` prepares a whole
-folder tree at once, writing `<name>_640x360.mp4` beside each video (or, with
-`--out DIR`, into a copy of the folder structure):
+size, from the same kind of file. `fdlc preprocess` prepares a whole folder tree
+at once, writing `<name>_640x360.mp4` beside each video (or, with `--out DIR`,
+into a copy of the folder structure):
 
 ```bash
-scripts/preprocess_videos.sh -n /cloud/server/projects/altahini/stanford_cages2   # list
-scripts/preprocess_videos.sh /cloud/server/projects/altahini/stanford_cages2      # encode
+fdlc preprocess --config triplet -n /cloud/server/projects/altahini/stanford_cages2   # list
+fdlc preprocess --config triplet /cloud/server/projects/altahini/stanford_cages2      # encode
 fdlc apply /cloud/server/projects/altahini/stanford_cages2/*/*_640x360.mp4 --model-id <model_id> --beside-video
 ```
 
 Raw H.264/H.265 streams (`.h264`, `.264`, `.h265`, `.hevc`), as Raspberry Pi
 cameras write them, have no container and no usable timestamps: `fdlc apply`
 cannot tell how many frames they hold, and a plain `ffmpeg` conversion can put
-every frame at time 0 and keep only a few. The script numbers their frames at
-`--fps` (default 25 -- set the camera's rate). Videos already in a container keep
-their own timing and are only scaled. `--size`, `--crf` and `--preset` set the
-encoding (default 640x360, 18, fast); `--raw-only` leaves container videos alone.
+every frame at time 0 and keep only a few. `preprocess` numbers their frames at
+the configuration's frame rate. Videos already in a container keep their own
+timing and are only scaled.
 
 It is safe to re-run: finished videos are skipped, and an interrupted encode
 leaves nothing behind. Each output's frame count is checked against its
-source's, which reads both once more; a difference is reported as `CHECK`.
-Outputs, labeled videos (`*.fdlc.*`) and triplet videos are never taken as input.
+source's, which reads both once more (`--no-check` skips that); a difference is
+reported as `CHECK` and the output kept. Outputs, labeled videos (`*.fdlc.*`) and
+triplet videos (`*-triplet.*`) are never taken as input. Needs `ffmpeg` and
+`ffprobe` on the PATH.
+
+### Configurations
+
+How videos are encoded is a named configuration, a small TOML file:
+
+```toml
+description = "Raw camera streams at 25 fps to 640x360, as the processed training videos"
+size = "640x360"        # even numbers
+fps = 25                # the frame rate raw streams are numbered at
+crf = 14                # x264 quality, lower is better
+preset = "slow"         # x264 speed/size trade-off
+scale_flags = "bicubic" # bicubic, area, lanczos, bilinear, neighbor, spline
+raw_only = false        # true: leave videos already in a container alone
+```
+
+`triplet` (the settings above) comes with FreeDLC. `fdlc list preprocess` lists
+every configuration and where it is, `fdlc list preprocess NAME` shows one. They
+are looked up, first match wins, in `./.fdlc/preprocess/` (kept with a project or
+a data folder), `~/.config/fdlc/preprocess/`, and the bundled ones; `--config`
+also takes a path to a `.toml` file.
+
+Any setting can be changed for one run (`--size`, `--fps`, `--crf`, `--preset`,
+`--scale-flags`, `--raw-only`), and `--save-config NAME` saves the result for
+later in `~/.config/fdlc/preprocess/NAME.toml`:
+
+```bash
+fdlc preprocess --config triplet --fps 30 --save-config cam30         # save only
+fdlc preprocess --config cam30 /data/new_cages                        # use it
+```
 
 ## Original and processed videos
 

@@ -1,0 +1,9 @@
+# Raspberry Pi camera recordings (raw .h264, no timestamps) brought to the size and
+# encoding of the processed training videos: 640x360, x264 crf 14, preset slow.
+description = "Raw camera streams at 25 fps to 640x360, as the processed training videos"
+size = "640x360"
+fps = 25
+crf = 14
+preset = "slow"
+scale_flags = "bicubic"
+raw_only = false
