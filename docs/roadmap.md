@@ -1,11 +1,25 @@
 ---
 deeplabcut:
-  last_content_updated: '2025-02-28'
+  last_content_updated: '2026-11-24'
   last_metadata_updated: '2026-03-06'
   ignore: false
 ---
 
 (dev-roadmap)=
+
+## FreeDLC
+
+Items for this fork; the DeepLabCut roadmap follows below.
+
+**Install:**
+
+- [ ] Put `fmpose3d` back into the `[all]` extra (`pyproject.toml`). It was left out
+  because no release fits a current environment: 0.0.8 and 0.0.9 require numpy<2
+  (FreeDLC requires numpy>=2), and 0.0.10 requires Python<3.13 and torch<2.11, so
+  `pip install -e ".[all]"` failed with "resolution-too-deep". Re-include it once a
+  release supports numpy 2, Python 3.13 and current torch; check with
+  `pip install --dry-run -e ".[all]"` in a Python 3.13 environment. Until then
+  `pip install -e ".[fmpose3d]"` asks for it explicitly where it fits.
 
 ## A development roadmap for DeepLabCut
 
