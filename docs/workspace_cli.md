@@ -82,6 +82,32 @@ The examples on this page name the project (`ws`) so they work from anywhere.
 '- .annotate/<video_id>/      staging for the annotator (see "Annotate")
 ```
 
+## Videos for applying a model
+
+A model works best on videos made the way its training videos were: the same
+size, from the same kind of file. `scripts/preprocess_videos.sh` prepares a whole
+folder tree at once, writing `<name>_640x360.mp4` beside each video (or, with
+`--out DIR`, into a copy of the folder structure):
+
+```bash
+scripts/preprocess_videos.sh -n /cloud/server/projects/altahini/stanford_cages2   # list
+scripts/preprocess_videos.sh /cloud/server/projects/altahini/stanford_cages2      # encode
+fdlc apply /cloud/server/projects/altahini/stanford_cages2/*/*_640x360.mp4 --model-id <model_id> --beside-video
+```
+
+Raw H.264/H.265 streams (`.h264`, `.264`, `.h265`, `.hevc`), as Raspberry Pi
+cameras write them, have no container and no usable timestamps: `fdlc apply`
+cannot tell how many frames they hold, and a plain `ffmpeg` conversion can put
+every frame at time 0 and keep only a few. The script numbers their frames at
+`--fps` (default 25 -- set the camera's rate). Videos already in a container keep
+their own timing and are only scaled. `--size`, `--crf` and `--preset` set the
+encoding (default 640x360, 18, fast); `--raw-only` leaves container videos alone.
+
+It is safe to re-run: finished videos are skipped, and an interrupted encode
+leaves nothing behind. Each output's frame count is checked against its
+source's, which reads both once more; a difference is reported as `CHECK`.
+Outputs, labeled videos (`*.fdlc.*`) and triplet videos are never taken as input.
+
 ## Original and processed videos
 
 A video can be registered twice under the same id:
