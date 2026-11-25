@@ -1,7 +1,10 @@
 # Each frame as three grayscale frames in its colour channels -- red the previous
 # frame, green the frame itself, blue the next -- at the size of the processed
 # training videos. Raw camera streams (.h264) have their frames numbered at 25 fps.
-description = "Grayscale previous/current/next frames in red/green/blue, 640x360"
+# Frames are aligned to the static scene first, which undoes the scale and shift
+# of cameras that refocus, and a per-frame table (<base>-triplet.csv) records
+# sharpness and the alignment applied.
+description = "Grayscale previous/current/next frames in red/green/blue, 640x360, stabilized"
 size = "640x360"
 fps = 25
 crf = 14
@@ -9,3 +12,5 @@ preset = "slow"
 scale_flags = "bicubic"
 raw_only = false
 channels = "triplet"
+stabilize = true
+frame_log = true

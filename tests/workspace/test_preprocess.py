@@ -61,16 +61,21 @@ def test_the_bundled_triplet_config():
         config = pp.load_config("triplet")
         assert (config.size, config.fps, config.crf, config.preset) == ("640x360", 25.0, 14, "slow")
         assert not config.raw_only and config.scale_flags == "bicubic" and config.channels == "triplet"
+        assert config.stabilize and config.frame_log and config.piped
+        assert not pp.parse_config({}, name="plain").piped
         assert pp.parse_config(config.to_dict(), name="triplet") == config          # saves as it loads
-        assert "640x360, triplet: grayscale previous/frame/next in red/green/blue, crf 14" in pp.describe(config)
+        assert ("640x360, triplet: grayscale previous/frame/next in red/green/blue, stabilized, frame log, crf 14"
+                in pp.describe(config))
 
 
 def test_a_bad_config_lists_every_problem():
     _raises(lambda: pp.parse_config({"size": "641x360", "fps": 0, "crf": 60, "preset": "quick",
-                                     "scale_flags": "fancy", "raw_only": "yes", "colour": 1, "channels": "rgb"},
+                                     "scale_flags": "fancy", "raw_only": "yes", "colour": 1, "channels": "rgb",
+                                     "stabilize": 1},
                                     name="bad"),
             "preprocess config 'bad'", "unknown key(s) colour", "641x360 needs even", "fps: 0",
-            "crf: 60", "preset: 'quick'", "scale_flags: 'fancy'", "raw_only: 'yes'", "channels: 'rgb'")
+            "crf: 60", "preset: 'quick'", "scale_flags: 'fancy'", "raw_only: 'yes'", "channels: 'rgb'",
+            "stabilize: 1 is not true or false")
     assert pp.parse_config({}, name="plain").channels == "color"
     _raises(lambda: pp.parse_config({"size": "big"}, name="x"), "must look like 640x360")
     base = pp.parse_config({}, name="plain")
@@ -139,10 +144,55 @@ def test_triplet_frames_stack_each_frame_with_its_neighbours():
     assert list(pp.triplet_frames([])) == []
 
     job = pp.Job(source=Path("in/K3.h264"), output=Path("in/K3-triplet.mp4"), raw=True)
-    decode, encode = pp.triplet_commands(job, pp.load_config("triplet"), "out.part.mp4", "25")
-    assert decode[decode.index("-vf") + 1] == "setpts=N/(25*TB),scale=640:360:flags=bicubic,format=gray"
+    decode, encode = pp.pipe_commands(job, pp.load_config("triplet"), "out.part.mp4", "25")
+    assert decode[decode.index("-vf") + 1] == "setpts=N/(25*TB),scale=640:360:flags=bicubic"
     assert decode[-5:] == ["-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"]
     assert encode[encode.index("-c:v") + 1] == "libx264rgb" and encode[encode.index("-s") + 1] == "640x360"
+    color = pp.load_config("triplet").with_changes(channels="color")
+    decode, encode = pp.pipe_commands(job, color, "out.part.mp4", "25")
+    assert decode[-5:] == ["-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1"]
+    assert encode[encode.index("-c:v") + 1] == "libx264" and encode[encode.index("-pix_fmt") + 1] == "bgr24"
+
+
+def _scene(width=320, height=240, seed=0):
+    """A textured still scene: smoothed noise, so ORB finds corners everywhere."""
+    import cv2
+    import numpy as np
+
+    noise = np.random.default_rng(seed).integers(0, 256, (height, width), dtype=np.uint8)
+    return cv2.GaussianBlur(noise, (5, 5), 1.5)
+
+
+def _zoom(image, scale, dx=0.0, dy=0.0):
+    """``image`` scaled about its centre and shifted, as a refocusing lens does."""
+    import cv2
+
+    h, w = image.shape[:2]
+    m = cv2.getRotationMatrix2D((w / 2, h / 2), 0, scale)
+    m[:, 2] += (dx, dy)
+    return cv2.warpAffine(image, m, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+
+
+def test_the_stabilizer_undoes_a_zoom_and_shift_despite_a_moving_animal():
+    import numpy as np
+
+    ref = _scene()
+    frame = _zoom(ref, 1.03, 4.0, -3.0)
+    frame[90:150, 120:200] = 255                                       # the "animal", not in the reference
+    stab = pp.Stabilizer(ref)
+    warped, transform, inliers, held = stab.align(frame)
+    fields = pp._transform_fields(transform)
+    assert not held and inliers >= pp.Stabilizer.MIN_INLIERS
+    assert abs(fields["scale"] - 1 / 1.03) < 0.003, fields
+    inner = (slice(30, 80), slice(30, 290))                            # away from the edges and the animal
+    assert np.abs(warped[inner].astype(int) - ref[inner].astype(int)).mean() < 4
+    flat = np.full_like(ref, 128)                                      # nothing to match: keep the last transform
+    _, again, _, held = stab.align(flat)
+    assert held and np.allclose(again, transform)
+    assert pp.sharpness(ref) > pp.sharpness(flat) == 0.0
+    same, transform, _, held = pp.Stabilizer(ref).align(ref.copy())   # nothing to correct
+    assert not held and transform is not None and np.array_equal(same, ref)
+    assert np.allclose(transform, [[1, 0, 0], [0, 1, 0]])
 
 
 def test_the_cli_lists_saves_and_plans():
@@ -223,6 +273,53 @@ def test_a_triplet_video_holds_the_previous_current_and_next_frames():
         code, out = _run(["preprocess", "--config", "triplet", "--size", "32x24", "--preset", "ultrafast",
                           "--overwrite", "data"])
         assert code == 0 and "done: 1 encoded, 0 skipped" in out and not list(d.rglob("*.part.mp4"))
+
+
+def test_a_refocusing_video_is_stabilized_and_logged():
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        print("  (skipped: no ffmpeg)")
+        return
+    import csv
+
+    import cv2
+    import numpy as np
+
+    with _sandbox() as d:
+        src = d / "data" / "cam.mp4"
+        src.parent.mkdir()
+        ref = _scene(seed=1)
+        writer = cv2.VideoWriter(str(src), cv2.VideoWriter_fourcc(*"mp4v"), 10, (320, 240))
+        for i in range(12):                                            # the lens refocuses at frame 6
+            gray = ref if i < 6 else _zoom(ref, 1.04, 3.0, 2.0)
+            writer.write(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR))
+        writer.release()
+        code, out = _run(["preprocess", "--config", "triplet", "--size", "320x240", "--preset", "ultrafast",
+                          "--crf", "0", "data"])
+        assert code == 0 and "12 frames" in out, out
+        with open(d / "data" / "cam-triplet.csv", newline="") as fh:
+            rows = list(csv.DictReader(fh))
+        assert [int(r["frame"]) for r in rows] == list(range(12))
+        assert list(rows[0]) == ["frame", "sharpness", "scale", "rotation", "dx", "dy", "inliers", "held"]
+        assert all(float(r["scale"]) == 1 and float(r["dx"]) == 0 for r in rows[:6])   # left as they are
+        assert all(abs(float(r["scale"]) - 1 / 1.04) < 0.004 for r in rows[6:]), [r["scale"] for r in rows]
+        cap = cv2.VideoCapture(str(d / "data" / "cam-triplet.mp4"))
+        greens = []
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            greens.append(frame[..., 1].astype(int))                   # the frame itself (BGR order)
+        cap.release()
+        inner = (slice(30, 210), slice(30, 290))
+        assert len(greens) == 12
+        assert np.abs(greens[9][inner] - greens[2][inner]).mean() < 4  # after the refocus, aligned again
+        unstab = _run(["preprocess", "--config", "triplet", "--size", "320x240", "--preset", "ultrafast",
+                       "--crf", "0", "--no-stabilize", "--no-frame-log", "--overwrite", "data"])
+        assert unstab[0] == 0
+        cap = cv2.VideoCapture(str(d / "data" / "cam-triplet.mp4"))
+        frames = [cap.read()[1][..., 1].astype(int) for _ in range(12)]
+        cap.release()
+        assert np.abs(frames[9][inner] - frames[2][inner]).mean() > 10  # without it the zoom stays
 
 
 def _run_smoke() -> int:

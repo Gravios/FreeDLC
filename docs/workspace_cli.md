@@ -127,6 +127,8 @@ preset = "slow"         # x264 speed/size trade-off
 scale_flags = "bicubic" # bicubic, area, lanczos, bilinear, neighbor, spline
 raw_only = false        # true: leave videos already in a container alone
 channels = "triplet"    # "color": the picture as it is; "triplet": see below
+stabilize = true        # align every frame to the still scene (refocusing cameras)
+frame_log = true        # write <base>-<config>.csv: sharpness and alignment per frame
 ```
 
 With `channels = "triplet"` each output frame holds three grayscale frames in its
@@ -137,15 +139,40 @@ going. These are stored with `libx264rgb` (H.264 High 4:4:4, RGB kept as is),
 because the usual 4:2:0 encoding would mix the channels and halve two of them.
 A model trained on triplet videos must be applied to triplet videos too.
 
-`triplet` (the settings above) comes with FreeDLC; `--channels color` makes it a
-plain downscale. `fdlc list preprocess` lists
+With `stabilize = true` every frame is aligned to a reference frame of the same
+video before it is stacked or written. A camera that refocuses changes the image
+scale slightly as its lens moves, and may shift it: every marker moves with it,
+and in a triplet video still objects get colour fringes. Each frame's features
+are matched to the reference's and a shift, rotation and uniform scale is fitted
+in a way the moving animal cannot pull; the frame is then warped back. The
+reference is the sharpest of the first 50 frames. A correction of under half a
+pixel is fitting noise and is not applied, so a steady camera's frames pass
+untouched. A frame with too little to match (darkness, the lid open) keeps the
+previous frame's correction. Stabilizing adds roughly half again to the encoding
+time.
+
+With `frame_log = true` a table `<base>-<config>.csv` is written beside each
+output, one row per frame: `sharpness` (the variance of the Laplacian; dips mark
+refocusing and motion blur), and when stabilizing the correction applied --
+`scale`, `rotation` (degrees), `dx`/`dy` (output pixels) -- with the number of
+matching features (`inliers`) and `held` = 1 where the previous correction was
+kept. A run of `scale` away from 1 is the lens refocusing; frames there, and
+frames of low sharpness, deserve less trust in their poses. Blur itself cannot be
+undone: label some frames from blurry stretches so the model learns them.
+
+The best fix is at the camera: turn autofocus off and fix the focus when
+recording (a Raspberry Pi Camera Module 3: `rpicam-vid --autofocus-mode manual
+--lens-position <dioptres>`).
+
+`triplet` (the settings above) comes with FreeDLC; `--channels color
+--no-stabilize --no-frame-log` makes it a plain downscale. `fdlc list preprocess` lists
 every configuration and where it is, `fdlc list preprocess NAME` shows one. They
 are looked up, first match wins, in `./.fdlc/preprocess/` (kept with a project or
 a data folder), `~/.config/fdlc/preprocess/`, and the bundled ones; `--config`
 also takes a path to a `.toml` file.
 
 Any setting can be changed for one run (`--size`, `--fps`, `--crf`, `--preset`,
-`--scale-flags`, `--raw-only`, `--channels`), and `--save-config NAME` saves the result for
+`--scale-flags`, `--raw-only`, `--channels`, `--[no-]stabilize`, `--[no-]frame-log`), and `--save-config NAME` saves the result for
 later in `~/.config/fdlc/preprocess/NAME.toml`:
 
 ```bash

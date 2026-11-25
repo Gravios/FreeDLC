@@ -152,7 +152,8 @@ def cmd_preprocess(args) -> int:
     try:
         config = load_config(args.config).with_changes(
             size=args.size, fps=args.fps, crf=args.crf, preset=args.preset, scale_flags=args.scale_flags,
-            raw_only=True if args.raw_only else None, channels=args.channels)
+            raw_only=True if args.raw_only else None, channels=args.channels, stabilize=args.stabilize,
+            frame_log=args.frame_log)
     except (FileNotFoundError, ValueError) as err:
         print(err)
         return 2
@@ -1289,6 +1290,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="only raw .h264/.h265 streams; leave container videos alone")
     g.add_argument("--channels", choices=("color", "triplet"),
                    help="color: the picture as it is; triplet: previous/current/next frame in red/green/blue")
+    g.add_argument("--stabilize", action=argparse.BooleanOptionalAction, default=None,
+                   help="align every frame to the static scene, undoing refocusing (--no-stabilize: don't)")
+    g.add_argument("--frame-log", action=argparse.BooleanOptionalAction, default=None, dest="frame_log",
+                   help="write <base>-<config>.csv with each frame's sharpness and alignment")
     p.add_argument("--save-config", metavar="NAME", dest="save_config",
                    help="save the configuration with these overrides as NAME (~/.config/fdlc/preprocess/)")
     p.set_defaults(func=cmd_preprocess)
