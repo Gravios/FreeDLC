@@ -1,9 +1,11 @@
-# Raspberry Pi camera recordings (raw .h264, no timestamps) brought to the size and
-# encoding of the processed training videos: 640x360, x264 crf 14, preset slow.
-description = "Raw camera streams at 25 fps to 640x360, as the processed training videos"
+# Each frame as three grayscale frames in its colour channels -- red the previous
+# frame, green the frame itself, blue the next -- at the size of the processed
+# training videos. Raw camera streams (.h264) have their frames numbered at 25 fps.
+description = "Grayscale previous/current/next frames in red/green/blue, 640x360"
 size = "640x360"
 fps = 25
 crf = 14
 preset = "slow"
 scale_flags = "bicubic"
 raw_only = false
+channels = "triplet"

@@ -60,16 +60,18 @@ def test_the_bundled_triplet_config():
     with _sandbox():
         config = pp.load_config("triplet")
         assert (config.size, config.fps, config.crf, config.preset) == ("640x360", 25.0, 14, "slow")
-        assert not config.raw_only and config.scale_flags == "bicubic"
+        assert not config.raw_only and config.scale_flags == "bicubic" and config.channels == "triplet"
         assert pp.parse_config(config.to_dict(), name="triplet") == config          # saves as it loads
-        assert "640x360, crf 14, preset slow" in pp.describe(config)
+        assert "640x360, triplet: grayscale previous/frame/next in red/green/blue, crf 14" in pp.describe(config)
 
 
 def test_a_bad_config_lists_every_problem():
     _raises(lambda: pp.parse_config({"size": "641x360", "fps": 0, "crf": 60, "preset": "quick",
-                                     "scale_flags": "fancy", "raw_only": "yes", "colour": 1}, name="bad"),
+                                     "scale_flags": "fancy", "raw_only": "yes", "colour": 1, "channels": "rgb"},
+                                    name="bad"),
             "preprocess config 'bad'", "unknown key(s) colour", "641x360 needs even", "fps: 0",
-            "crf: 60", "preset: 'quick'", "scale_flags: 'fancy'", "raw_only: 'yes'")
+            "crf: 60", "preset: 'quick'", "scale_flags: 'fancy'", "raw_only: 'yes'", "channels: 'rgb'")
+    assert pp.parse_config({}, name="plain").channels == "color"
     _raises(lambda: pp.parse_config({"size": "big"}, name="x"), "must look like 640x360")
     base = pp.parse_config({}, name="plain")
     assert base.with_changes(crf=20, size="320x180") == pp.parse_config({"crf": 20, "size": "320x180"}, name="plain")
@@ -126,6 +128,23 @@ def test_what_is_encoded_and_where():
         assert "-fflags" not in container and container[container.index("-vf") + 1].startswith("scale=")
 
 
+def test_triplet_frames_stack_each_frame_with_its_neighbours():
+    import numpy as np
+
+    frames = [np.full((2, 3), v, np.uint8) for v in (10, 20, 30)]
+    out = list(pp.triplet_frames(frames))
+    assert [tuple(int(c) for c in f[0, 0]) for f in out] == [(10, 10, 20), (10, 20, 30), (20, 30, 30)]
+    assert out[0].shape == (2, 3, 3)
+    assert [tuple(int(c) for c in f[0, 0]) for f in pp.triplet_frames(frames[:1])] == [(10, 10, 10)]
+    assert list(pp.triplet_frames([])) == []
+
+    job = pp.Job(source=Path("in/K3.h264"), output=Path("in/K3-triplet.mp4"), raw=True)
+    decode, encode = pp.triplet_commands(job, pp.load_config("triplet"), "out.part.mp4", "25")
+    assert decode[decode.index("-vf") + 1] == "setpts=N/(25*TB),scale=640:360:flags=bicubic,format=gray"
+    assert decode[-5:] == ["-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"]
+    assert encode[encode.index("-c:v") + 1] == "libx264rgb" and encode[encode.index("-s") + 1] == "640x360"
+
+
 def test_the_cli_lists_saves_and_plans():
     with _sandbox() as d:
         (d / "data").mkdir()
@@ -163,6 +182,47 @@ def test_a_raw_stream_is_encoded_frame_for_frame():
         assert size == "160,120"
         code, out = _run(["preprocess", "--config", "triplet", "data"])       # the output is not an input
         assert code == 0 and "skip (exists)" in out and "done: 0 encoded, 1 skipped" in out, out
+
+
+def test_a_triplet_video_holds_the_previous_current_and_next_frames():
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        print("  (skipped: no ffmpeg)")
+        return
+    import cv2
+    import numpy as np
+
+    with _sandbox() as d:
+        src = d / "data" / "steps.mp4"
+        src.parent.mkdir()
+        levels = [40 + 20 * i for i in range(8)]                      # frame i is a flat grey of levels[i]
+        writer = cv2.VideoWriter(str(src), cv2.VideoWriter_fourcc(*"mp4v"), 10, (64, 48))
+        for v in levels:
+            writer.write(np.full((48, 64, 3), v, np.uint8))
+        writer.release()
+        code, out = _run(["preprocess", "--config", "triplet", "--size", "32x24", "--preset", "ultrafast",
+                          "--crf", "0", "-j", "2", "data"])
+        assert code == 0 and "8 frames" in out, out
+        cap = cv2.VideoCapture(str(d / "data" / "steps-triplet.mp4"))
+        got = []
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            b, g, r = (int(round(frame[..., c].mean())) for c in range(3))   # OpenCV gives BGR
+            got.append((r, g, b))
+        cap.release()
+        want = [(levels[max(i - 1, 0)], levels[i], levels[min(i + 1, 7)]) for i in range(8)]
+        assert len(got) == 8 and all(abs(x - y) <= 3 for a, b in zip(got, want, strict=True)
+                                     for x, y in zip(a, b, strict=True)), (got, want)
+        # --overwrite encodes again; without it the finished video is skipped
+        code, out = _run(["preprocess", "--config", "triplet", "--size", "32x24", "--preset", "ultrafast", "data"])
+        assert "skip (exists)" in out and "done: 0 encoded, 1 skipped" in out
+        code, out = _run(["preprocess", "--config", "triplet", "--size", "32x24", "--preset", "ultrafast",
+                          "--overwrite", "-n", "data"])
+        assert "would overwrite (container)" in out and "dry run: 1 to encode" in out
+        code, out = _run(["preprocess", "--config", "triplet", "--size", "32x24", "--preset", "ultrafast",
+                          "--overwrite", "data"])
+        assert code == 0 and "done: 1 encoded, 0 skipped" in out and not list(d.rglob("*.part.mp4"))
 
 
 def _run_smoke() -> int:

@@ -92,7 +92,7 @@ at once. Each video is encoded in place, named after the configuration used:
 
 ```bash
 fdlc preprocess --config triplet -n /cloud/server/projects/altahini/stanford_cages2   # list
-fdlc preprocess --config triplet /cloud/server/projects/altahini/stanford_cages2      # encode
+fdlc preprocess --config triplet -j 4 /cloud/server/projects/altahini/stanford_cages2 # encode, 4 at a time
 fdlc apply /cloud/server/projects/altahini/stanford_cages2/*/*-triplet.mp4 --model-id <model_id> --beside-video
 ```
 
@@ -103,8 +103,10 @@ every frame at time 0 and keep only a few. `preprocess` numbers their frames at
 the configuration's frame rate. Videos already in a container keep their own
 timing and are only scaled.
 
-It is safe to re-run: finished videos are skipped, and an interrupted encode
-leaves nothing behind. Each output's frame count is checked against its
+It is safe to re-run: finished videos are skipped (`--overwrite` encodes them
+again, replacing each only once its new version is complete), and an interrupted
+encode leaves nothing behind. `-j N` encodes N videos at a time; each ffmpeg
+already uses several cores, so 2-4 is usually plenty. Each output's frame count is checked against its
 source's, which reads both once more (`--no-check` skips that); a difference is
 reported as `CHECK` and the output kept. A file named after any known
 configuration (`*-triplet.mp4`, ...), labeled videos (`*.fdlc.*`) and unfinished
@@ -124,16 +126,26 @@ crf = 14                # x264 quality, lower is better
 preset = "slow"         # x264 speed/size trade-off
 scale_flags = "bicubic" # bicubic, area, lanczos, bilinear, neighbor, spline
 raw_only = false        # true: leave videos already in a container alone
+channels = "triplet"    # "color": the picture as it is; "triplet": see below
 ```
 
-`triplet` (the settings above) comes with FreeDLC. `fdlc list preprocess` lists
+With `channels = "triplet"` each output frame holds three grayscale frames in its
+colour channels: red the previous frame, green the frame itself, blue the next one
+(the first and last frames repeat for the missing neighbour). Still parts of the
+picture are grey; anything moving shows red where it was and blue where it is
+going. These are stored with `libx264rgb` (H.264 High 4:4:4, RGB kept as is),
+because the usual 4:2:0 encoding would mix the channels and halve two of them.
+A model trained on triplet videos must be applied to triplet videos too.
+
+`triplet` (the settings above) comes with FreeDLC; `--channels color` makes it a
+plain downscale. `fdlc list preprocess` lists
 every configuration and where it is, `fdlc list preprocess NAME` shows one. They
 are looked up, first match wins, in `./.fdlc/preprocess/` (kept with a project or
 a data folder), `~/.config/fdlc/preprocess/`, and the bundled ones; `--config`
 also takes a path to a `.toml` file.
 
 Any setting can be changed for one run (`--size`, `--fps`, `--crf`, `--preset`,
-`--scale-flags`, `--raw-only`), and `--save-config NAME` saves the result for
+`--scale-flags`, `--raw-only`, `--channels`), and `--save-config NAME` saves the result for
 later in `~/.config/fdlc/preprocess/NAME.toml`:
 
 ```bash

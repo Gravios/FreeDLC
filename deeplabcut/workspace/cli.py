@@ -21,6 +21,7 @@ import argparse
 import contextlib
 import json
 import logging
+import shutil
 import sys
 from pathlib import Path
 
@@ -151,7 +152,7 @@ def cmd_preprocess(args) -> int:
     try:
         config = load_config(args.config).with_changes(
             size=args.size, fps=args.fps, crf=args.crf, preset=args.preset, scale_flags=args.scale_flags,
-            raw_only=True if args.raw_only else None)
+            raw_only=True if args.raw_only else None, channels=args.channels)
     except (FileNotFoundError, ValueError) as err:
         print(err)
         return 2
@@ -173,25 +174,46 @@ def cmd_preprocess(args) -> int:
         return 2
     jobs = plan_jobs(root, config, other_configs=[name for name, _, _ in available_configs()])
     print(f"config {config.name}: {describe(config)}")
-    todo = [job for job in jobs if not job.done]
+    todo = [job for job in jobs if args.overwrite or not job.done]
     for job in jobs:
-        if job.done:
+        if job not in todo:
             print(f"skip (exists): {job.output}")
     if args.dry_run:
         for job in todo:
-            print(f"would encode ({'raw' if job.raw else 'container'}): {job.source} -> {job.output}")
+            verb = "would overwrite" if job.done else "would encode"
+            print(f"{verb} ({'raw' if job.raw else 'container'}): {job.source} -> {job.output}")
         print(f"dry run: {len(todo)} to encode, {len(jobs) - len(todo)} already done")
         return 0
-    ok = failed = 0
-    for i, job in enumerate(todo, 1):
-        print(f"[{i}/{len(todo)}] {job.source} -> {job.output}", flush=True)
-        try:
-            success, message = run_job(job, config, check_frames=not args.no_check)
-        except FileNotFoundError as err:
-            print(err)
+    if args.jobs < 1:
+        print(f"--jobs must be at least 1, got {args.jobs}")
+        return 2
+    for tool in ("ffmpeg", "ffprobe"):
+        if shutil.which(tool) is None:
+            print(f"{tool} is not installed or not on PATH")
             return 2
-        print(f"  {message}", flush=True)
-        ok, failed = ok + success, failed + (not success)
+
+    def encode(job):
+        # ffmpeg's progress line only when one video is encoded at a time
+        return run_job(job, config, check_frames=not args.no_check, stats=args.jobs == 1)
+
+    ok = failed = 0
+    if args.jobs == 1:
+        for i, job in enumerate(todo, 1):
+            print(f"[{i}/{len(todo)}] {job.source} -> {job.output}", flush=True)
+            success, message = encode(job)
+            print(f"  {message}", flush=True)
+            ok, failed = ok + success, failed + (not success)
+    else:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        print(f"encoding {len(todo)} video(s), {args.jobs} at a time", flush=True)
+        with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+            futures = {pool.submit(encode, job): job for job in todo}
+            for i, future in enumerate(as_completed(futures), 1):
+                job = futures[future]
+                success, message = future.result()
+                print(f"[{i}/{len(todo)}] {job.output}: {message}", flush=True)
+                ok, failed = ok + success, failed + (not success)
     print(f"done: {ok} encoded, {len(jobs) - len(todo)} skipped, {failed} failed or to check")
     return 0 if failed == 0 else 1
 
@@ -1251,6 +1273,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("root", nargs="?", metavar="DIR", help="folder searched recursively for videos")
     p.add_argument("--config", help="named configuration, or a .toml file (see `fdlc list preprocess`)")
     p.add_argument("-n", "--dry-run", action="store_true", dest="dry_run", help="list what would be encoded")
+    p.add_argument("--overwrite", action="store_true",
+                   help="encode videos again even where the output exists (replaced once the new one is done)")
+    p.add_argument("-j", "--jobs", type=int, default=1, metavar="N",
+                   help="encode N videos at a time (default: 1; each ffmpeg already uses several cores)")
     p.add_argument("--no-check", action="store_true", dest="no_check",
                    help="skip comparing each output's frame count with its source's (saves reading both again)")
     g = p.add_argument_group("overrides of the configuration")
@@ -1261,6 +1287,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--scale-flags", dest="scale_flags", help="scaler: bicubic, area, lanczos, ...")
     g.add_argument("--raw-only", action="store_true", dest="raw_only",
                    help="only raw .h264/.h265 streams; leave container videos alone")
+    g.add_argument("--channels", choices=("color", "triplet"),
+                   help="color: the picture as it is; triplet: previous/current/next frame in red/green/blue")
     p.add_argument("--save-config", metavar="NAME", dest="save_config",
                    help="save the configuration with these overrides as NAME (~/.config/fdlc/preprocess/)")
     p.set_defaults(func=cmd_preprocess)
