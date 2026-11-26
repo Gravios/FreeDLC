@@ -824,5 +824,13 @@ def _run_smoke() -> int:
     return 0
 
 
+def test_apply_scale_flag():
+    code, out = _run(["apply", "nothing.mp4", "--model", "nowhere", "--scale", "0"])
+    assert code == 2 and "--scale must be a positive number" in out       # refused before anything is opened
+    args = cli.build_parser().parse_args(["apply", "v.mp4", "--model", "m", "--scale", "0.77"])
+    assert args.scale == 0.77
+    assert cli.build_parser().parse_args(["apply", "v.mp4", "--model", "m"]).scale == 1.0
+
+
 if __name__ == "__main__":
     raise SystemExit(_run_smoke())

@@ -666,6 +666,33 @@ Where the results go:
 A pose parquet has one row per frame, individual and marker: `frame, individual,
 bodypart, x, y, likelihood`, in the pixels of the video it was run on.
 
+### Animals filmed larger or smaller: `--scale`
+
+```bash
+fdlc apply --project ws --model-id <model_id> runway-640x360/ --scale 0.77
+```
+
+A model finds animals best at the size it learned them. Footage from another rig
+can show them larger or smaller at the same resolution -- a camera nearer the
+floor, another lens -- and `--scale` makes up for it: every frame is resized by
+the factor before the model sees it (and the detector, for a top-down model),
+and the positions are written in the video's own pixels all the same, so the
+pose lines up with the video and `label`, `compare` and `extract --from-run` work
+as usual. The record and `run.toml` keep the factor (`params.scale`).
+
+The factor is the ratio of the sizes: the animal's length in the training videos
+over its length in the new ones, in pixels. A rat 200 px from nose to tail base
+where the training rats were 155 px wants `--scale 0.77` (155 / 200). To measure
+it, take one stretched body length (a high percentile of nose to tail base over a
+session, which favours the animal walking straight) from a run on each kind of
+footage. Training with scale augmentation (`affine: scaling: [0.5, 1.25]` in
+the default) covers part of the difference; the factor is for footage outside it.
+
+A model whose own inference transforms resize its input (`resize`,
+`longest_max_size`), and a top-down model, which crops each animal to a fixed
+size, sees the animals at about the same size whatever `--scale` is; `apply` warns
+when it is given to one.
+
 ## More frames from a model's own results: `extract --from-run`
 
 ```bash

@@ -41,9 +41,10 @@ def _patch_inference(mp, *, fail_on=None):
         tracker["builds"] += 1
         return ("POSE_RUNNER", None)
 
-    def fake_infer(bundle, video, pose_runner, detector_runner, *, cropping):
+    def fake_infer(bundle, video, pose_runner, detector_runner, *, cropping, scale=1.0):
         name = Path(video).name
         tracker["inferred"].append(name)
+        tracker.setdefault("scales", []).append(scale)
         if fail_on and name == fail_on:
             raise RuntimeError("boom")
         return pd.DataFrame({"frame": [0], "individual": ["single"], "bodypart": ["snout"],
@@ -363,6 +364,47 @@ def _run_smoke() -> int:
             chk()
     print(f"apply: {len(checks)}/{len(checks)} checks passed")
     return 0
+
+
+def test_scale_resizes_frames_and_puts_positions_back(monkeypatch):
+    import numpy as np
+
+    frame = np.zeros((360, 640, 3), np.uint8)
+    assert apply_mod.resize_frame(frame, 0.77).shape == (277, 493, 3)
+    assert apply_mod.resize_frame(frame, 1.0) is frame
+    preds = [{"bodyparts": np.array([[[77.0, 154.0, 0.9], [-1.0, -1.0, 0.0]]]),
+              "bboxes": np.array([[7.7, 15.4, 77.0, 77.0]])}]
+    back = apply_mod.unscale_predictions(preds, 0.77)
+    assert np.allclose(back[0]["bodyparts"][0, 0], [100.0, 200.0, 0.9])           # likelihood kept
+    assert np.allclose(back[0]["bodyparts"][0, 1], [-1.0, -1.0, 0.0])             # unplaced kept
+    assert np.allclose(back[0]["bboxes"], [[10.0, 20.0, 100.0, 100.0]])
+    assert preds[0]["bodyparts"][0, 0, 0] == 77.0                                 # input untouched
+    for bad in (0, -1, float("nan"), float("inf")):
+        try:
+            apply_mod.check_scale(bad)
+            raise AssertionError(f"scale {bad} accepted")
+        except ValueError as err:
+            assert "--scale" in str(err)
+
+    with tempfile.TemporaryDirectory() as d:                      # threaded through, and recorded
+        d = Path(d)
+        bundle = _bundle(d)
+        tracker = _patch_inference(monkeypatch)
+        (d / "clip1.mp4").write_bytes(b"v")
+        ws.apply_to_videos(bundle, [d / "clip1.mp4"], d / "out", scale=0.77)
+        from deeplabcut.workspace.manifest import read_manifest
+        assert tracker["scales"] == [0.77] and read_manifest(d / "out" / "clip1.toml")["params"]["scale"] == 0.77
+        try:
+            ws.apply_to_videos(bundle, [d / "clip1.mp4"], d / "out2", scale=0)
+            raise AssertionError("scale 0 accepted")
+        except ValueError:
+            pass
+        assert apply_mod.scale_note(bundle, 0.77) is None                # bottom-up, no input resize
+        cfg = bundle.pose_config_path
+        with cfg.open("w") as fh:
+            yaml.safe_dump({"data": {"inference": {"normalize_images": True, "resize": {"height": 256}}}}, fh)
+        assert "resizes its own input (resize)" in apply_mod.scale_note(bundle, 0.77)
+        assert apply_mod.scale_note(bundle, 1.0) is None
 
 
 if __name__ == "__main__":

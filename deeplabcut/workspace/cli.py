@@ -30,6 +30,7 @@ from .apply import (
     apply_to_videos,
     beside_video_path,
     check_run_outputs,
+    check_scale,
     collect_videos,
     labeled_video_path,
     read_fdlc_display,
@@ -858,6 +859,11 @@ def cmd_videos(args) -> int:
 
 
 def cmd_apply(args) -> int:
+    try:
+        scale = check_scale(args.scale)
+    except ValueError as err:
+        print(err)
+        return 2
     videos = collect_videos(args.videos)
     if not videos:
         print("no videos found")
@@ -878,7 +884,7 @@ def cmd_apply(args) -> int:
         skeleton = list(project.config.skeleton)
     common = dict(device=args.device, batch_size=args.batch_size, skeleton=skeleton,
                   labeled_video=args.labeled_video, pcutoff=args.pcutoff,
-                  display=None if args.model else project.config.display)
+                  display=None if args.model else project.config.display, scale=scale)
 
     def _report(results):
         for video, pose in results.items():
@@ -905,7 +911,7 @@ def cmd_apply(args) -> int:
         print(err)
         return 2
     run = project.new_run("analyze", model_id=args.model_id, inputs=[str(v) for v in videos],
-                          params={"pcutoff": args.pcutoff})
+                          params={"pcutoff": args.pcutoff, "scale": scale})
     run.start()
     out_root = Path(args.out) if args.out else run.dir
     results = apply_to_videos(bundle, videos, out_root, **common)
@@ -1508,6 +1514,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="also render an annotated .fdlc.mp4 with keypoints + skeleton")
     p.add_argument("--pcutoff", type=float, default=0.6,
                    help="likelihood threshold for drawing keypoints in the labeled video")
+    p.add_argument("--scale", type=float, default=1.0,
+                   help="resize the frames by this before the model sees them, e.g. 0.77 for animals filmed "
+                        "1.3x larger than those it was trained on; positions are written in the video's pixels "
+                        "(default: 1)")
     p.add_argument("--device")
     p.add_argument("--batch-size", type=int, default=1, dest="batch_size")
     p.add_argument("-v", "--verbose", action="store_true",

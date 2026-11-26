@@ -47,6 +47,10 @@ __all__ = [
     "pose_record_path",
     "pose_labeled_path",
     "check_run_outputs",
+    "check_scale",
+    "resize_frame",
+    "unscale_predictions",
+    "scale_note",
 ]
 
 #: Video file extensions recognized when expanding directories / globs.
@@ -327,13 +331,107 @@ def _build_runners(bundle, *, snapshot, detector_snapshot, device, batch_size, m
     return pose_runner, detector_runner
 
 
-def _infer_to_df(bundle, video, pose_runner, detector_runner, *, cropping):
-    """Run inference on one video with pre-built runners; return a tidy long DataFrame."""
+def check_scale(scale: float) -> float:
+    """``scale`` as a float, refused unless it is positive and finite."""
+    import math
+
+    scale = float(scale)
+    if not (math.isfinite(scale) and scale > 0):
+        raise ValueError(f"--scale must be a positive number, got {scale}")
+    return scale
+
+
+def resize_frame(frame, scale: float):
+    """``frame`` resized by ``scale`` (area averaging to shrink, bilinear to enlarge); as is at 1."""
+    if scale == 1.0:
+        return frame
+    import cv2
+
+    h, w = frame.shape[:2]
+    size = (max(1, round(w * scale)), max(1, round(h * scale)))
+    return cv2.resize(frame, size, interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR)
+
+
+def unscale_predictions(predictions, scale: float):
+    """Prediction dicts made on frames resized by ``scale``, put back in the video's pixels.
+
+    The ``x, y`` of ``bodyparts`` and ``unique_bodyparts`` (and the boxes of ``bboxes``)
+    are divided by ``scale``; likelihoods are left, and so is the ``-1, -1`` a model
+    gives for a marker it did not place.
+    """
+    import numpy as np
+
+    if scale == 1.0:
+        return predictions
+    out = []
+    for pred in predictions:
+        pred = dict(pred)
+        for key in ("bodyparts", "unique_bodyparts"):
+            if pred.get(key) is not None:
+                arr = np.array(pred[key], dtype=float, copy=True)
+                xy = arr[..., :2]
+                unplaced = np.all(xy == -1, axis=-1, keepdims=True)
+                arr[..., :2] = np.where(unplaced, xy, xy / scale)
+                pred[key] = arr
+        if pred.get("bboxes") is not None:
+            pred["bboxes"] = np.asarray(pred["bboxes"], dtype=float) / scale
+        out.append(pred)
+    return out
+
+
+#: inference transforms after which the model sees a fixed size whatever the frame's
+INPUT_RESIZERS = ("resize", "longest_max_size", "top_down_crop")
+
+
+def scale_note(bundle, scale: float) -> str | None:
+    """A warning when ``scale`` can't do what it is for: the bundle's own inference
+    transforms resize its input (or crop each animal to a fixed size, top-down) anyway."""
+    if scale == 1.0:
+        return None
+    import yaml
+
+    try:
+        with open(bundle.pose_config_path, encoding="utf-8") as fh:
+            config = yaml.safe_load(fh) or {}
+        inference = (config.get("data") or {}).get("inference") or {}
+    except (OSError, ValueError, AttributeError, yaml.YAMLError):
+        return None
+    resizers = [k for k in INPUT_RESIZERS if inference.get(k)]
+    if not resizers and not getattr(bundle.card, "top_down", False):
+        return None
+    what = ", ".join(resizers) or "top-down crops"
+    return (f"--scale {scale:g}: model {bundle.card.model_id} resizes its own input ({what}), so the animals "
+            "reach it at about the same size whatever the scale")
+
+
+def _scaled_video(video, cropping, scale: float):
+    """A ``VideoIterator`` on ``video`` whose frames come resized by ``scale`` (imports torch)."""
+    from deeplabcut.pose_estimation_pytorch.apis.videos import VideoIterator
+
+    class _Scaled(VideoIterator):
+        def __next__(self):
+            item = super().__next__()
+            if isinstance(item, tuple):
+                return resize_frame(item[0], scale), item[1]
+            return resize_frame(item, scale)
+
+    return _Scaled(str(video), cropping=cropping)
+
+
+def _infer_to_df(bundle, video, pose_runner, detector_runner, *, cropping, scale: float = 1.0):
+    """Run inference on one video with pre-built runners; return a tidy long DataFrame.
+
+    With ``scale`` the frames are resized by it before they reach the model (and the
+    detector, for a top-down model), and the positions are put back in the video's
+    pixels: for animals filmed larger or smaller than those the model learned.
+    """
     from deeplabcut.pose_estimation_pytorch import video_inference
 
+    source = str(video) if scale == 1.0 else _scaled_video(video, cropping, scale)
     predictions = video_inference(
-        video=str(video), pose_runner=pose_runner, detector_runner=detector_runner, cropping=cropping
+        video=source, pose_runner=pose_runner, detector_runner=detector_runner, cropping=cropping
     )
+    predictions = unscale_predictions(predictions, scale)
     meta = bundle._read_pose_config().get("metadata", {})
     return predictions_to_long_df(
         predictions, bodyparts=bundle.card.bodyparts,
@@ -342,7 +440,7 @@ def _infer_to_df(bundle, video, pose_runner, detector_runner, *, cropping):
 
 
 def _write_video_outputs(df, video, out_dir, bundle, *, snapshot, batch_size, device, cropping, started,
-                         pcutoff=None):
+                         pcutoff=None, scale=1.0):
     pose_path = write_pose_parquet(df, run_pose_path(out_dir, video))
     run = RunManifest(
         run_id=Path(video).stem,
@@ -354,7 +452,8 @@ def _write_video_outputs(df, video, out_dir, bundle, *, snapshot, batch_size, de
         snapshot=bundle.card.default_snapshot if snapshot == "default" else snapshot,
         inputs=[str(Path(video).resolve())],
         outputs=[pose_path.name],
-        params={"batch_size": batch_size, "device": device, "cropping": cropping, "pcutoff": pcutoff},
+        params={"batch_size": batch_size, "device": device, "cropping": cropping, "pcutoff": pcutoff,
+                "scale": scale},
         code_version=code_version(),
     )
     write_manifest(pose_record_path(pose_path), run.to_dict())
@@ -379,6 +478,7 @@ def apply_to_video(
     pcutoff: float = 0.6,
     runners=None,
     display=None,
+    scale: float = 1.0,
 ):
     """Run a :class:`ModelBundle` on one video, writing its pose and record into ``out_dir``.
 
@@ -392,9 +492,13 @@ def apply_to_video(
     ``labeled_video=True`` an annotated ``.fdlc.mp4`` (beside) / ``<stem>.mp4``
     (``out_dir``) is also rendered, styled by ``display`` (a project's ``[display]``
     table) when given. Pass ``runners`` (from :func:`apply_to_videos`) to reuse a
-    runner already built for this bundle.
+    runner already built for this bundle. ``scale`` resizes the frames before the model
+    sees them (positions are written in the video's pixels all the same): ``0.77`` to
+    show a model animals ``1/0.77`` = 1.3x larger than those it was trained on at the
+    size it knows.
     """
     started = now_iso()
+    scale = check_scale(scale)
     if runners is None:
         _report_bundle(bundle, snapshot, detector_snapshot)
         runners = _build_runners(
@@ -402,15 +506,16 @@ def apply_to_video(
             device=device, batch_size=batch_size, max_individuals=max_individuals,
         )
     pose_runner, detector_runner = runners
-    files_log.info("video %s", shown(video))
-    df = _infer_to_df(bundle, video, pose_runner, detector_runner, cropping=cropping)
+    resized = f" (frames resized by {scale:g} for the model)" if scale != 1 else ""
+    files_log.info("video %s%s", shown(video), resized)
+    df = _infer_to_df(bundle, video, pose_runner, detector_runner, cropping=cropping, scale=scale)
     if not write:
         return df
     if beside_video:
         pose_path = write_pose_parquet(df, beside_video_path(video))
         sidecar = _write_fdlc_sidecar(
             video, pose_path, bundle, skeleton=skeleton,
-            params={"batch_size": batch_size, "device": device, "cropping": cropping},
+            params={"batch_size": batch_size, "device": device, "cropping": cropping, "scale": scale},
             snapshot=snapshot, started=started, display=display,
         )
         files_log.info("  pose     %s (%d frame(s))", shown(pose_path), df["frame"].nunique() if len(df) else 0)
@@ -422,7 +527,7 @@ def apply_to_video(
     pose_path = _write_video_outputs(
         df, video, out_dir, bundle,
         snapshot=snapshot, batch_size=batch_size, device=device, cropping=cropping, started=started,
-        pcutoff=pcutoff,
+        pcutoff=pcutoff, scale=scale,
     )
     files_log.info("  pose     %s (%d frame(s))", shown(pose_path), df["frame"].nunique() if len(df) else 0)
     files_log.info("  record   %s", shown(pose_record_path(pose_path)))
@@ -449,6 +554,7 @@ def apply_to_videos(
     pcutoff: float = 0.6,
     on_error: str = "raise",
     display=None,
+    scale: float = 1.0,
 ) -> dict[str, Path | None]:
     """Label several videos with one bundle, building the runner **once**.
 
@@ -459,9 +565,14 @@ def apply_to_videos(
     next to its source video and ``out_root`` is ignored. Returns
     ``{video_path: pose_parquet_path}``; on a per-video failure, ``on_error="skip"``
     records ``None`` and continues, while ``on_error="raise"`` (default) re-raises.
+    ``scale`` resizes every frame before inference (see :func:`apply_to_video`).
     """
     out_root = Path(out_root)
     videos = [Path(v) for v in videos]
+    scale = check_scale(scale)
+    note = scale_note(bundle, scale)
+    if note:
+        log.warning(note)
     if not beside_video:
         check_run_outputs(videos, out_root, labeled_video=labeled_video)
     _report_bundle(bundle, snapshot, detector_snapshot)
@@ -476,7 +587,7 @@ def apply_to_videos(
             results[str(video)] = apply_to_video(
                 bundle, video, out_dir,
                 snapshot=snapshot, detector_snapshot=detector_snapshot,
-                device=device, batch_size=batch_size, cropping=cropping,
+                device=device, batch_size=batch_size, cropping=cropping, scale=scale,
                 beside_video=beside_video, skeleton=skeleton,
                 labeled_video=labeled_video, pcutoff=pcutoff, runners=runners, display=display,
             )
