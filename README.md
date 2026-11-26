@@ -93,6 +93,7 @@ fdlc evaluate ws <model_id> --pck 20
 fdlc compare <model_A> <model_B> --project ws    # on the labeled frames neither trained on
 fdlc apply --project ws --model-id <model_id> reduced-640x360/*.mp4 --labeled-video
 fdlc extract --from-run latest --project ws -n 10   # more frames, the model's markers proposed
+fdlc import labels paws.parquet --project ws --labeled-frames   # markers made elsewhere, into the labels
 ```
 
 Inside a project folder the project argument can be left out: `cd ws && fdlc train`.

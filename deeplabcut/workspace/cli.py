@@ -5,7 +5,7 @@
 
 Thin wrappers around the workspace API: ``create``, ``list``,
 ``export-skeleton``, ``migrate``, ``info``, ``models``, ``add-video``, ``videos``,
-``extract``, ``annotate``, ``apply``,
+``extract``, ``annotate``, ``apply``, ``import``,
 ``label``, ``track``, ``export``, ``train``, ``evaluate``. Uses only argparse (no
 extra dependencies), and each handler calls a single workspace function, so
 parsing and dispatch are testable without torch; the
@@ -914,6 +914,104 @@ def cmd_apply(args) -> int:
     return 0
 
 
+def _import_items(args, project):
+    """Read and check each parquet named on the command line, and find its video: ``[(file, long, vid, kind)]``."""
+    from .import_markers import check_markers, find_video, parse_renames, read_markers
+
+    files = [Path(f) for f in args.parquet]
+    if (args.video or args.video_id) and len(files) > 1:
+        raise CommandError("--video/--video-id name one file's video; give one file, or leave them out "
+                           "and let each file's name find its video")
+    rename = parse_renames(args.rename)
+    items = []
+    for f in files:
+        if not f.is_file():
+            raise CommandError(f"no such file: {f}")
+        long, layout = read_markers(f)
+        long = check_markers(long, project, rename=rename, drop_unknown=args.drop_unknown)
+        vid, kind = find_video(project, f, long, video=args.video, video_id=args.video_id, kind=args.kind)
+        n_frames = long["frame"].nunique()
+        markers = long["bodypart"].nunique()
+        print(f"{f.name}: {layout}, {n_frames} frame(s), {markers} marker(s) -> {vid} ({kind} pixels)")
+        items.append((f, long, vid, kind))
+    return items
+
+
+def cmd_import_labels(args) -> int:
+    from .frames import extracted_indices, frame_index
+    from .import_markers import import_labels, parse_frames, select_frames
+
+    project = _open_project(args.project)
+    try:
+        items = _import_items(args, project)
+        frames_spec = parse_frames(args.frames) if args.frames else None
+    except ValueError as err:
+        print(err)
+        return 2
+    total = 0
+    for f, long, vid, kind in items:
+        labeled = None
+        if args.labeled_frames:
+            parquet = project.layout.labels_parquet(vid)
+            if not parquet.is_file():
+                print(f"{vid}: no labels yet, so no labeled frames to add markers to")
+                continue
+            import pandas as pd
+
+            names = pd.read_parquet(parquet)["image"].unique()
+            labeled = {i for i in map(frame_index, names) if i is not None}
+        frames = select_frames(long, frames=frames_spec, n=args.n, every=args.all, labeled=labeled,
+                               min_likelihood=args.min_likelihood)
+        new = sorted(set(frames) - extracted_indices(project, vid))
+        if args.dry_run:
+            print(f"  would label {len(frames)} frame(s) ({len(new)} to extract): {_frames_text(frames)}")
+            continue
+        try:
+            s = import_labels(project, long, vid, kind, frames, overwrite=args.overwrite, propose=args.propose,
+                              min_likelihood=args.min_likelihood, scorer=f"import-{f.name.split('.')[0]}")
+        except (ValueError, FileNotFoundError, OSError) as err:
+            print(f"{vid}: {err}")
+            return 2
+        what = "proposed as machine labels" if args.propose else "labeled"
+        extra = ""
+        if s["kept"]:
+            extra = f"; {s['kept']} already labeled and kept (--overwrite replaces them)"
+        elif s["replaced"]:
+            extra = f"; {s['replaced']} replaced"
+        print(f"  {s['placed']} marker(s) {what} in {len(frames)} frame(s) ({s['extracted']} extracted){extra} "
+              f"-> {s['target']}")
+        total += s["placed"]
+    if not args.dry_run:
+        print(f"done: {total} marker(s)")
+        if total:
+            print(f"check them with `fdlc annotate <video>{_project_flag(args)}`")
+    return 0
+
+
+def _frames_text(frames) -> str:
+    shown_ = ", ".join(map(str, frames[:8]))
+    return shown_ + (f", ... ({len(frames)})" if len(frames) > 8 else "")
+
+
+def cmd_import_run(args) -> int:
+    from .import_markers import import_run
+
+    project = _open_project(args.project)
+    try:
+        items = _import_items(args, project)
+        if args.dry_run:
+            return 0
+        run, paths = import_run(project, items, note=args.note or "")
+    except ValueError as err:
+        print(err)
+        return 2
+    for p in paths:
+        print(f"  -> {p}")
+    print(f"run {run.run_id}: {len(paths)} pose(s); use it as any analyze run, e.g. "
+          f"`fdlc extract --from-run {run.run_id}{_project_flag(args)}` or `fdlc compare {run.run_id} latest`")
+    return 0
+
+
 def cmd_label(args) -> int:
     from .label_video import render_labeled_from_parquet
 
@@ -1415,6 +1513,46 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-v", "--verbose", action="store_true",
                    help="list the files read and written (labels, frames, dataset, config, snapshots, outputs)")
     p.set_defaults(func=cmd_apply)
+
+    p = sub.add_parser("import", help="bring markers from a pose parquet in, as labels or as a run")
+    imp = p.add_subparsers(dest="what", metavar="{labels,run}", required=True)
+    for name, helptext, func in (
+        ("labels", "add markers at chosen frames to a video's labels (extracting the frames)", cmd_import_labels),
+        ("run", "make an analyze run of whole poses, as `apply` would", cmd_import_run),
+    ):
+        q = imp.add_parser(name, help=helptext)
+        q.add_argument("parquet", nargs="+", help="pose parquet files: FreeDLC's long layout (frame, bodypart, "
+                                                  "x, y[, individual, likelihood]) or Mufasa's wide one "
+                                                  "(<marker>_x, <marker>_y[, <marker>_p])")
+        q.add_argument("--project", help="workspace project (default: the project the current directory is in)")
+        q.add_argument("--video", help="the video the markers were made on (one file; default: matched by the "
+                                       "file's name, as `videos --register` matches)")
+        q.add_argument("--video-id", dest="video_id", help="the registered video id the markers belong to (one file)")
+        q.add_argument("--kind", choices=("original", "processed"),
+                       help="whose pixels the coordinates are in (default: the only one registered, else told "
+                            "from the coordinates)")
+        q.add_argument("--rename", nargs="+", metavar="FILE=PROJECT", default=[],
+                       help="the file's marker names to the project's, e.g. paw_LF=forepaw_left")
+        q.add_argument("--drop-unknown", action="store_true", dest="drop_unknown",
+                       help="leave out markers the project doesn't have (default: refuse the file)")
+        q.add_argument("--dry-run", action="store_true", dest="dry_run", help="say what would be done; change nothing")
+        q.set_defaults(func=func)
+        if name == "labels":
+            pick = q.add_mutually_exclusive_group()
+            pick.add_argument("-n", type=int, default=20,
+                              help="frames to label, spread over those with markers (default: 20)")
+            pick.add_argument("--frames", help="these frames: numbers and ranges, e.g. 120,450,900-910")
+            pick.add_argument("--all", action="store_true", help="every frame with markers")
+            pick.add_argument("--labeled-frames", action="store_true", dest="labeled_frames",
+                              help="the frames already labeled: add the markers to them")
+            q.add_argument("--min-likelihood", type=float, default=0.0, dest="min_likelihood",
+                           help="place only markers at least this likely (default: 0, all)")
+            q.add_argument("--overwrite", action="store_true",
+                           help="replace markers already labeled (default: keep them)")
+            q.add_argument("--propose", action="store_true",
+                           help="stage them as machine labels to accept in napari, not as labels")
+        else:
+            q.add_argument("--note", help="a note for the run's run.toml")
 
     p = sub.add_parser("label", help="render an annotated video from an existing .fdlc.parquet")
     p.add_argument("video", help="source video to annotate")

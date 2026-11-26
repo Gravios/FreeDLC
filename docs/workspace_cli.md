@@ -37,6 +37,7 @@ Installation is described in the [README](../README.md#install).
 | `evaluate <project> <model_id>` | pixel error against the annotations |
 | `compare A B` | two models on the labeled frames neither trained on, or two `apply` runs with each other |
 | `apply <videos...>` | run a model on videos (`--project` + `--model-id`, or `--model <bundle>`) |
+| `import labels` / `import run <parquet...>` | markers made elsewhere (another model, a smoother, a measurement): as labels at chosen frames, or as an analyze run |
 | `label <video>` | render a labeled video from a pose file |
 | `track <pose parquet>` | link multi-animal detections into identities across frames |
 | `preprocess --config NAME <dir>` | downscale every video in a folder tree for a model (see "Videos for applying a model") |
@@ -740,6 +741,83 @@ Every individual's markers count towards the total, so in a multi-animal
 project a frame in which one animal is seen well is not unsure even if another
 is missed. Proposed positions go to the project's individuals in the order the
 model numbers them.
+
+## Markers from elsewhere: `import labels` and `import run`
+
+```bash
+fdlc import run   session1.smoothed.parquet --kind processed            # a whole pose, as an analyze run
+fdlc import labels session1.paws.parquet --kind processed -n 20          # markers at 20 frames, as labels
+fdlc import labels session1.paws.parquet --kind processed --labeled-frames   # added to the frames you have
+fdlc import labels other.parquet --rename nose=head_nose --drop-unknown --propose
+```
+
+Markers made outside the project -- by another project's model, by a smoother that
+cleaned a model's output (Mufasa's Kalman smoother), or by a measurement (paw
+positions from a pressure plate) -- come in from a parquet file in either layout:
+
+- **long**, FreeDLC's own (what `apply` writes): one row per frame and marker, with
+  `frame`, `bodypart`, `x`, `y` and, optionally, `individual` and `likelihood`;
+- **wide**, Mufasa's: one row per frame, with `<marker>_x`, `<marker>_y` and,
+  optionally, `<marker>_p`. A `frame` column, else the row number, is the frame.
+  Other columns (a smoother's `<marker>_var_x`, say) are left out, and Mufasa's
+  `0, 0` with likelihood 0 is read as a missing point.
+
+**The markers must be the project's.** They are matched by name, never by position.
+A marker the project doesn't have stops the import, with its name;
+`--rename FILE=PROJECT ...` maps names, `--drop-unknown` leaves the others out, or
+add the markers to `project.toml`. In a one-animal project the file must hold one
+animal; in a multi-animal one its individuals must be the project's (a model's
+numbered `idv0`, `idv1`... go to them in order).
+
+**The video.** Each file belongs to a registered video, found from its name the way
+`videos --register` matches names (`session1.parquet`, `session1-triplet.parquet` and
+`session1.cam1.fdlc.parquet` all belong to `session1`), or given with `--video FILE`
+or `--video-id ID` (one file at a time). The coordinates are in the pixels of the
+video the markers were made on. When only one of the original and processed videos
+is registered, that is the one; otherwise coordinates beyond the processed video
+mean the original, and when they fit both, `--kind original|processed` says which.
+
+### As an analyze run: `import run`
+
+The whole pose becomes an analyze run, written as `apply` writes one -- the file
+named after the video (its registered media), beside a record whose `inputs` name
+that video -- so `compare`, `extract --from-run` and `label` take it like a model's.
+Several files make one run, one pose per video. The coordinates are kept in the
+video's pixels; `run.toml` lists where they came from (`params.imported_from`), and
+`--note` adds a note. This is how a smoothed pose is compared with the model's:
+
+```bash
+fdlc apply --project ws --model-id <model_id> reduced/session1-640x360.mp4
+fdlc import run session1_smoothed_v2.parquet --project ws --kind processed --note "Kalman v2"
+fdlc compare <apply run> latest --project ws
+```
+
+### As labels: `import labels`
+
+The markers at the frames chosen are added to the video's labels, ready to check in
+`annotate`:
+
+- `-n N` (default 20): N frames spread evenly over those with markers;
+- `--frames 120,450,900-910`: these;
+- `--all`: every frame with markers;
+- `--labeled-frames`: the frames already labeled -- adding new markers (paws, say)
+  to the labels you have.
+
+`--min-likelihood` places only markers at least that likely. Frames not extracted
+yet are extracted, from the original video and, when one is registered, the
+processed one. The positions are converted to original pixels, as labels made in
+`annotate` are (or to the pixels older labels of the video are stored in).
+
+A marker already labeled in a frame keeps its position; `--overwrite` replaces it.
+The labels go into `labels.parquet` and, when there is one, the annotator's copy in
+`.annotate/` (which replaces `labels.parquet` when napari closes); the copy's
+previous version is kept as `.bak`. `--dry-run` says which frames would be labeled
+and changes nothing.
+
+`--propose` stages the markers as machine labels instead, as `extract --from-run`
+does (see "The proposed markers"): a layer to check in napari and accept by saving
+it. Then neither `labels.parquet` nor your labels are touched, and frames already
+labeled are left out.
 
 ## Compare two models or two runs
 
