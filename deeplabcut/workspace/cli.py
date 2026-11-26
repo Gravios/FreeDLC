@@ -121,6 +121,25 @@ def cmd_create(args) -> int:
     return 0
 
 
+def cmd_background(args) -> int:
+    from .background import make_plates
+
+    project = _open_project(args.project)
+    try:
+        folder = make_plates(project, args.name, kind=args.frames, samples=args.samples, videos=args.videos or None)
+    except ValueError as err:
+        print(err)
+        return 2
+    from .manifest import read_manifest
+
+    record = read_manifest(folder / "background.toml")
+    print(f"plates of {len(record['videos'])} video(s) ({args.frames} frames): {folder}")
+    for line in record.get("skipped", []):
+        print(f"  skipped {line}")
+    print(f"use them with: fdlc preprocess --config triplet --underlay {folder} <dir>")
+    return 0
+
+
 def cmd_list_preprocess(args) -> int:
     from .preprocess import available_configs, describe, load_config
 
@@ -154,7 +173,9 @@ def cmd_preprocess(args) -> int:
         config = load_config(args.config).with_changes(
             size=args.size, fps=args.fps, crf=args.crf, preset=args.preset, scale_flags=args.scale_flags,
             raw_only=True if args.raw_only else None, channels=args.channels, stabilize=args.stabilize,
-            frame_log=args.frame_log)
+            frame_log=args.frame_log, floor_max=args.floor_max, animal_diff=args.animal_diff,
+            underlay=None if args.underlay is None else (str(Path(args.underlay).expanduser().resolve())
+                                                          if args.underlay else ""))
     except (FileNotFoundError, ValueError) as err:
         print(err)
         return 2
@@ -174,6 +195,14 @@ def cmd_preprocess(args) -> int:
     if not root.is_dir():
         print(f"not a folder: {root}")
         return 2
+    if config.underlay:  # fail before any encoding, not in every job
+        from .background import load_plates
+
+        try:
+            load_plates(config.underlay)
+        except FileNotFoundError as err:
+            print(err)
+            return 2
     jobs = plan_jobs(root, config, other_configs=[name for name, _, _ in available_configs()])
     print(f"config {config.name}: {describe(config)}")
     todo = [job for job in jobs if args.overwrite or not job.done]
@@ -1373,6 +1402,16 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("name", nargs="?", help="skeleton config to describe (default: list every name)")
     q.set_defaults(func=cmd_list_skeletons)
 
+    p = sub.add_parser("background", help="background plates of the project's labeled videos, "
+                       "for `preprocess --underlay`")
+    p.add_argument("--project", default=None, help=PROJECT_HELP)
+    p.add_argument("--name", default="default", help="plates folder name under backgrounds/ (default: default)")
+    p.add_argument("--frames", choices=Layout.VIDEO_KINDS[::-1], default="processed",
+                   help="frame set to read: the one the model was trained on (default: processed)")
+    p.add_argument("--samples", type=int, default=200, help="frames sampled per video for the median (default 200)")
+    p.add_argument("--videos", nargs="*", help="these labeled videos only (default: all)")
+    p.set_defaults(func=cmd_background)
+
     p = sub.add_parser("preprocess", help="downscale every video in a folder tree for a model, "
                        "as <base>-<config>.mp4 beside each (see --config)")
     p.add_argument("root", nargs="?", metavar="DIR", help="folder searched recursively for videos")
@@ -1398,6 +1437,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="align every frame to the static scene, undoing refocusing (--no-stabilize: don't)")
     g.add_argument("--frame-log", action=argparse.BooleanOptionalAction, default=None, dest="frame_log",
                    help="write <base>-<config>.csv with each frame's sharpness and alignment")
+    g.add_argument("--underlay", metavar="DIR",
+                   help="replace a dark floor with one made from these plates (`fdlc background`); '' for none")
+    g.add_argument("--floor-max", type=int, dest="floor_max", metavar="LEVEL",
+                   help="with --underlay: background pixels at most this bright (0-255) are floor (default 40)")
+    g.add_argument("--animal-diff", type=int, dest="animal_diff", metavar="LEVEL",
+                   help="with --underlay: pixels this much brighter than the background are the animal (default 25)")
     p.add_argument("--save-config", metavar="NAME", dest="save_config",
                    help="save the configuration with these overrides as NAME (~/.config/fdlc/preprocess/)")
     p.set_defaults(func=cmd_preprocess)

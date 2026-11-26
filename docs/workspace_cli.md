@@ -41,6 +41,7 @@ Installation is described in the [README](../README.md#install).
 | `label <video>` | render a labeled video from a pose file |
 | `track <pose parquet>` | link multi-animal detections into identities across frames |
 | `preprocess --config NAME <dir>` | downscale every video in a folder tree for a model (see "Videos for applying a model") |
+| `background` | background plates of the project's training videos, for `preprocess --underlay` (see "Another floor") |
 | `upgrade [<project>]` | convert a project made before to the current layout (see "Upgrading a project") |
 | `export <bundle>` | write the pose model as ONNX (see [onnx_export.md](onnx_export.md)) |
 
@@ -78,6 +79,7 @@ The examples on this page name the project (`ws`) so they work from anywhere.
 |     |- labels.parquet       the annotations
 |     '- labels.toml          which pixel space labels.parquet is in
 |- models/<model_id>/         portable model bundles (model.toml, pose.yaml, snapshots/, train_frames.txt)
+|- backgrounds/<name>/        background plates for `preprocess --underlay` (fdlc background)
 |- runs/<kind>/<run_id>/      one directory per train / evaluate / analyze run;
 |                             an analyze run holds <video>.parquet, .toml, .mp4 per video
 |- derived/                   reserved; nothing writes here yet
@@ -173,13 +175,54 @@ a data folder), `~/.config/fdlc/preprocess/`, and the bundled ones; `--config`
 also takes a path to a `.toml` file.
 
 Any setting can be changed for one run (`--size`, `--fps`, `--crf`, `--preset`,
-`--scale-flags`, `--raw-only`, `--channels`, `--[no-]stabilize`, `--[no-]frame-log`), and `--save-config NAME` saves the result for
+`--scale-flags`, `--raw-only`, `--channels`, `--[no-]stabilize`, `--[no-]frame-log`, `--underlay`,
+`--floor-max`, `--animal-diff`), and `--save-config NAME` saves the result for
 later in `~/.config/fdlc/preprocess/NAME.toml`:
 
 ```bash
 fdlc preprocess --config triplet --fps 30 --save-config cam30         # save only
 fdlc preprocess --config cam30 /data/new_cages                        # use it
 ```
+
+### Another floor: `fdlc background` and `--underlay`
+
+A model learns the floor of its training videos too. Applied to videos filmed on
+another floor -- a black track surface, say -- it meets pixels around the animal
+it never saw. `--underlay` swaps such a dark floor for one made from the training
+videos' own floor, so the model sees what it knows:
+
+```bash
+cd /data/proc/fdlc/strohA-xw-radstim
+fdlc background                     # plates of every labeled video -> backgrounds/default/
+fdlc preprocess --config triplet --underlay backgrounds/default -j 16 /path/to/track/videos
+```
+
+`fdlc background` estimates, for each labeled video of the project, the empty
+scene -- the per-pixel median of 200 frames spread over the video; the animal is
+rarely at the same place, so the median shows the floor without it -- and the
+floor region, from where the labeled markers lie. Each video's plate
+(`<video>.png`) and floor mask (`<video>-floor.png`) are written to
+`backgrounds/<name>/` (`--name`, default `default`); `--frames` picks the frame set
+(default `processed`, the one the model was trained on), `--samples` the frames per
+video. Look at the plates: a plate showing the animal means it rested in one
+place for most of that video, and can simply be deleted from the folder.
+
+With `--underlay DIR`, `preprocess` first takes each video's own median
+background (decoding every 5th frame, up to 300 kept), whose dark part -- at most
+`--floor-max` (default 40 of 255) -- is the floor. A new floor is stitched from
+squares cut out of the plates' floors, overlapping and blended, the same for every
+frame of a video (and on every run). Each floor pixel brighter than the background
+counts as animal in proportion to how much brighter (fully so at the animal's
+brightness; `--animal-diff`, default 25, sets what is animal at all), and only the
+rest is swapped: the animal stays, its edge blends into the new floor, and its
+shadow becomes a shadow on the new floor. This happens after stabilizing and
+before triplet stacking; a still floor is still grey in a triplet. The frame log
+gains `floor`, the share of each frame swapped.
+
+This suits a light animal on a dark floor. It changes only the floor: walls,
+lighting and the camera's view stay as they are. Compare the results with and
+without it (`fdlc apply` on both, or `fdlc compare` on the two runs). `underlay`,
+`floor_max` and `animal_diff` can also be kept in a configuration (`--save-config`).
 
 ## Original and processed videos
 

@@ -19,6 +19,9 @@ written as plain H.264 MP4 beside it, named after the configuration used:
     channels = "triplet"  # "color": the picture as it is; "triplet": see below
     stabilize = true      # align every frame to the static scene (autofocus, see below)
     frame_log = true      # write <base>-<config>.csv: sharpness (and alignment) per frame
+    underlay = ""         # plates folder from `fdlc background`: replace a dark floor (see below)
+    floor_max = 40        # with underlay: a background pixel at most this bright is floor
+    animal_diff = 25      # with underlay: a pixel this much brighter than the background is the animal
 
 Configurations are looked up, first match wins, in ``./.fdlc/preprocess/`` (one
 kept with a project or a data folder), the user's
@@ -62,7 +65,15 @@ frame -- dips mark refocusing and motion blur) and, when stabilizing, the
 transform applied (``scale``, ``rotation`` in degrees, ``dx``/``dy`` in output
 pixels, ``inliers``, ``held`` when the previous transform was kept).
 
-Plain colour without either setting is a single ffmpeg; anything else decodes
+With ``underlay`` set to a folder of plates (``fdlc background``), a dark floor is
+replaced by one stitched from the plates' floors, so a model meets the floor it
+was trained on: each video's median background is taken from frames sampled
+across it (a first, lighter decoding pass), its dark part is the floor, and
+:class:`~.background.Underlay` replaces it in every frame except where the
+animal is. This happens after stabilizing and before triplet stacking. The
+frame log then gains ``floor``, the share of each frame replaced.
+
+Plain colour without any of these settings is a single ffmpeg; anything else decodes
 frames into Python (one ffmpeg), processes them, and encodes them (another).
 
 :func:`plan_jobs`, :func:`ffmpeg_command`, :func:`pipe_commands` and
@@ -116,7 +127,9 @@ PRESETS = ("ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "sl
 #: ffmpeg's scaler algorithms worth choosing between
 SCALE_FLAGS = ("bicubic", "bilinear", "area", "lanczos", "neighbor", "spline")
 _KEYS = {"description", "size", "fps", "crf", "preset", "scale_flags", "raw_only", "channels", "stabilize",
-         "frame_log"}
+         "frame_log", "underlay", "floor_max", "animal_diff"}
+#: frames the median background of a video is taken from, at most
+MEDIAN_FRAMES = 300
 #: what the colour channels of an output frame hold
 CHANNELS = ("color", "triplet")
 _OUTPUT = re.compile(r"_\d+x\d+(\.part)?\.mp4$", re.IGNORECASE)
@@ -139,6 +152,9 @@ class PreprocessConfig:
     channels: str = "color"
     stabilize: bool = False
     frame_log: bool = False
+    underlay: str = ""          # plates folder (``fdlc background``); "" for none
+    floor_max: int = 40         # a background pixel at most this bright is floor
+    animal_diff: int = 25       # a pixel this much brighter than the background is the animal
     description: str = ""
 
     @property
@@ -150,12 +166,13 @@ class PreprocessConfig:
         fps = int(self.fps) if float(self.fps).is_integer() else self.fps
         return {"description": self.description, "size": self.size, "fps": fps, "crf": self.crf,
                 "preset": self.preset, "scale_flags": self.scale_flags, "raw_only": self.raw_only,
-                "channels": self.channels, "stabilize": self.stabilize, "frame_log": self.frame_log}
+                "channels": self.channels, "stabilize": self.stabilize, "frame_log": self.frame_log,
+                "underlay": self.underlay, "floor_max": self.floor_max, "animal_diff": self.animal_diff}
 
     @property
     def piped(self) -> bool:
         """Whether frames pass through Python (anything but a plain scale)."""
-        return self.channels == "triplet" or self.stabilize or self.frame_log
+        return self.channels == "triplet" or self.stabilize or self.frame_log or bool(self.underlay)
 
     def with_changes(self, **changes) -> PreprocessConfig:
         """A copy with ``changes`` (``None`` values ignored), checked like a file is."""
@@ -207,10 +224,18 @@ def parse_config(table: dict[str, Any], *, name: str) -> PreprocessConfig:
     channels = table.get("channels", base.channels)
     if channels not in CHANNELS:
         problems.append(f"channels: {channels!r} is not one of {', '.join(CHANNELS)}")
+    underlay = table.get("underlay", base.underlay)
+    if not isinstance(underlay, str):
+        problems.append(f"underlay: {underlay!r} is not a folder path (or \"\" for none)")
+    levels = {}
+    for key, low in (("floor_max", 0), ("animal_diff", 1)):
+        levels[key] = table.get(key, getattr(base, key))
+        if isinstance(levels[key], bool) or not isinstance(levels[key], int) or not low <= levels[key] <= 255:
+            problems.append(f"{key}: {levels[key]!r} is not a whole number from {low} to 255")
     if problems:
         raise ValueError(f"preprocess config {name!r}:\n  " + "\n  ".join(problems))
     return PreprocessConfig(name=name, width=width, height=height, fps=float(fps), crf=crf, preset=preset,
-                            scale_flags=flags, channels=channels, **switches,
+                            scale_flags=flags, channels=channels, **switches, underlay=underlay, **levels,
                             description=str(table.get("description", "")))
 
 
@@ -476,8 +501,9 @@ def frame_log_path(output: str | Path) -> Path:
     return Path(output).with_suffix(".csv")
 
 
-def _processed_frames(frames, config: PreprocessConfig, log_rows: list | None):
-    """Stabilize ``frames`` (BGR, or grayscale for a triplet) and record each one's row in ``log_rows``."""
+def _processed_frames(frames, config: PreprocessConfig, log_rows: list | None, underlay=None):
+    """Stabilize ``frames`` (BGR, or grayscale for a triplet), put ``underlay``'s floor under them, and
+    record each one's row in ``log_rows``."""
     import cv2
 
     frames = iter(frames)
@@ -497,9 +523,60 @@ def _processed_frames(frames, config: PreprocessConfig, log_rows: list | None):
             if row is not None:
                 row.update({k: round(v, 5) for k, v in _transform_fields(transform).items()})
                 row.update(inliers=inliers, held=int(held))
+        if underlay is not None:
+            frame, replaced = underlay.apply(frame)
+            if row is not None:
+                row["floor"] = round(replaced, 4)
         if row is not None:
             log_rows.append(row)
         yield frame
+
+
+def _median_of_job(job: Job, config: PreprocessConfig):
+    """The median background of a job's video at the output size, from up to :data:`MEDIAN_FRAMES` frames.
+
+    Every 5th frame is decoded (raw streams cannot seek); when more than twice the
+    cap are held, every other one is dropped and the stride doubled, so the frames
+    kept stay spread over the whole video.
+    """
+    import numpy as np
+
+    from .background import median_background
+
+    before_input, retime = _input_args(job, config)
+    vf = (f"{retime}scale={config.width}:{config.height}:flags={config.scale_flags},"
+          "select=not(mod(n\\,5)),format=gray")
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostats", *before_input, "-i", str(job.source),
+           "-map", "0:v:0", "-an", "-vf", vf, "-fps_mode", "passthrough",
+           "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"]
+    size = config.width * config.height
+    kept, stride, seen = [], 1, 0
+    with subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE) as proc:
+        while True:
+            buf = proc.stdout.read(size)
+            if len(buf) < size:
+                break
+            if seen % stride == 0:
+                kept.append(np.frombuffer(buf, np.uint8).reshape(config.height, config.width))
+            seen += 1
+            if len(kept) >= 2 * MEDIAN_FRAMES:
+                kept, stride = kept[::2], stride * 2
+    if not kept:
+        raise ValueError(f"{job.source}: no frames could be read for its background")
+    return median_background(kept)
+
+
+def _underlay_for(job: Job, config: PreprocessConfig):
+    """The :class:`~.background.Underlay` of a job: its dark floor, filled from the configured plates."""
+    import zlib
+
+    from .background import Underlay, load_plates, synthesize_floor
+
+    median = _median_of_job(job, config)
+    texture = synthesize_floor(load_plates(config.underlay), median.shape,
+                               patch=max(16, round(min(config.width, config.height) / 8)),
+                               seed=zlib.crc32(job.source.name.encode()))  # the same floor on every run
+    return Underlay(median, texture, floor_max=config.floor_max, animal_diff=config.animal_diff)
 
 
 def _encode_piped(job: Job, config: PreprocessConfig, target: Path, *, stats: bool) -> tuple[int, list | None]:
@@ -522,7 +599,8 @@ def _encode_piped(job: Job, config: PreprocessConfig, target: Path, *, stats: bo
             yield np.frombuffer(buf, np.uint8).reshape(shape)
 
     log_rows = [] if config.frame_log else None
-    frames = _processed_frames(decoded(), config, log_rows)
+    underlay = _underlay_for(job, config) if config.underlay else None
+    frames = _processed_frames(decoded(), config, log_rows, underlay)
     if triplet:
         frames = triplet_frames(frames)
     try:
@@ -609,6 +687,8 @@ def describe(config: PreprocessConfig) -> str:
               else "color")
     if config.stabilize:
         pixels += ", stabilized"
+    if config.underlay:
+        pixels += f", dark floor (<= {config.floor_max}) replaced from {config.underlay}"
     if config.frame_log:
         pixels += ", frame log"
     return (f"{config.size}, {pixels}, crf {config.crf}, preset {config.preset}, {config.scale_flags} scaling, "
