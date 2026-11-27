@@ -300,10 +300,39 @@ def test_videos_register_changes_nothing_unless_the_whole_folder_matches():
         assert proj.videos("processed") == []
 
         code, out = _run(["videos", str(proj.root), "--register", str(d / "missing")])
-        assert code == 2 and "not a directory" in out
+        assert code == 2 and f"not found: {d / 'missing'}" in out
         (d / "empty").mkdir()
         code, out = _run(["videos", str(proj.root), "--register", str(d / "empty")])
         assert code == 2 and "no video files found" in out
+
+
+def test_videos_register_takes_files_and_skips_the_originals_beside_them():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        proj = ws.Project.create(d / "ws", task="reach", bodyparts=["snout"])
+        # each session folder holds the original and its triplet, as the recorder leaves them
+        a1, a3 = _make_videos(d / "src" / "rat1" / "day1", ["rat1-day1.cam1.mp4", "rat1-day1.cam1-triplet.mp4"])
+        b1, b3 = _make_videos(d / "src" / "rat2" / "day1", ["rat2-day1.cam1.mp4", "rat2-day1.cam1-triplet.mp4"])
+        (c3,) = _make_videos(d / "src" / "rat2" / "day2", ["rat2-day2.cam0-triplet.mp4"])   # no original added
+        for src in (a1, b1):
+            proj.add_video(src)
+
+        code, out = _run(["videos", str(proj.root), "--register", str(d / "src" / "rat1" / "day1")])
+        assert code == 0 and "ignored 1 original video(s)" in out, out          # the folder, originals and all
+        assert proj.videos("processed") == ["rat1-day1-cam1"]
+
+        code, out = _run(["videos", str(proj.root), "--register", str(d / "src" / "**" / "*-triplet.mp4")])
+        assert code == 2 and "rat2-day2.cam0-triplet.mp4: no original video matches this name" in out
+        assert proj.videos("processed") == ["rat1-day1-cam1"]                    # nothing changed
+
+        code, out = _run(["videos", str(proj.root), "--register", str(a3), str(b3), "--link", "copy"])
+        assert code == 0 and "registered 2 processed video(s) from 2 paths (copy)" in out, out
+        assert proj.videos("processed") == ["rat1-day1-cam1", "rat2-day1-cam1"]
+        assert "ignored" not in out
+
+        code, out = _run(["videos", str(proj.root), "--register", str(a1)])
+        assert code == 2 and "no video files found" in out and "other than the originals' own" in out
+        assert c3.exists()
 
 
 def test_videos_notes_processed_frames_and_counts_that_no_longer_fit():

@@ -747,21 +747,37 @@ def _png_size(path: Path) -> tuple[int, int] | None:
     return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
 
 
-def _register_processed(project, directory: str, link: str) -> int:
-    """Make the videos in ``directory`` the processed videos of the originals they match."""
-    folder = Path(directory).expanduser()
-    if not folder.is_dir():
-        print(f"not a directory: {folder}")
+def _original_media(project) -> set[Path]:
+    """The files the registered originals are read from, resolved."""
+    from .frames import resolve_media
+
+    media = set()
+    for vid in project.videos("original"):
+        with contextlib.suppress(FileNotFoundError, OSError):
+            media.add(resolve_media(project, vid).resolve())
+    return media
+
+
+def _register_processed(project, paths: list[str], link: str) -> int:
+    """Make the videos in ``paths`` (files, folders or globs) the processed videos of the originals they match."""
+    where = paths[0] if len(paths) == 1 else f"{len(paths)} paths"
+    missing = [p for p in paths if not any(ch in p for ch in "*?[") and not Path(p).expanduser().exists()]
+    if missing:
+        print("not found: " + ", ".join(missing))
         return 2
-    found = collect_videos([folder])
-    # rendered `apply --labeled-video` / `label` output, never a source video
-    files = [f for f in found if not f.stem.endswith(".fdlc")]
+    found = collect_videos([str(Path(p).expanduser()) for p in paths])
+    originals = _original_media(project)
+    # an original's own file (processed videos often sit beside them), and rendered
+    # `apply --labeled-video` / `label` output: never a processed video
+    own = [f for f in found if f.resolve() in originals]
+    labeled = [f for f in found if f.stem.endswith(".fdlc") and f not in own]
+    files = [f for f in found if f not in own and f not in labeled]
     if not files:
-        print(f"no video files found in {folder}")
+        print(f"no video files found in {where}" + (" other than the originals' own" if own else ""))
         return 2
     pairs, problems = project.match_originals(files)
     if problems:
-        print(f"{folder} does not line up with the original videos ({len(problems)}); nothing was changed:")
+        print(f"{where} does not line up with the original videos ({len(problems)}); nothing was changed:")
         for line in problems:
             print(f"  {line}")
         return 2
@@ -773,9 +789,11 @@ def _register_processed(project, directory: str, link: str) -> int:
             print(f"{file}: {err}")
             return 2
         print(f"  {vid} <- {file}")
-    print(f"registered {len(pairs)} processed video(s) from {folder} ({link})")
-    if len(files) < len(found):
-        print(f"ignored {len(found) - len(files)} labeled .fdlc video(s)")
+    print(f"registered {len(pairs)} processed video(s) from {where} ({link})")
+    if own:
+        print(f"ignored {len(own)} original video(s)")
+    if labeled:
+        print(f"ignored {len(labeled)} labeled .fdlc video(s)")
     left = [v for v in project.videos("original") if v not in pairs]
     if left:
         print(f"{len(left)} original(s) have no video there and keep what they had (e.g. {left[0]})")
@@ -1538,9 +1556,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("videos", help="list video ids with their registered videos, labels and frames")
     p.add_argument("project", nargs="?", default=None, help=PROJECT_HELP)
-    p.add_argument("--register", metavar="DIR",
-                   help="make the videos in DIR the processed videos of the originals their names match; "
-                        "nothing is changed unless every video in DIR matches one")
+    p.add_argument("--register", metavar="PATH", nargs="+",
+                   help="make these videos (files, folders, or globs; a quoted ** glob searches subfolders) the "
+                        "processed videos of the originals their names match; the originals' own files are "
+                        "skipped, and nothing is changed unless every other video matches one")
     p.add_argument("--link", choices=["symlink", "copy", "reference"], default="symlink",
                    help="with --register, how to materialize the media (default: symlink)")
     p.set_defaults(func=cmd_videos)

@@ -277,7 +277,8 @@ def collect_videos(paths: Sequence[str | Path], *, extensions=VIDEO_EXTENSIONS) 
     """Expand file / directory / glob paths into a sorted, de-duplicated video list.
 
     - a directory yields the video files directly inside it (by extension),
-    - a glob pattern (containing ``*``, ``?`` or ``[``) is expanded,
+    - a glob pattern (containing ``*``, ``?`` or ``[``) is expanded; ``**`` matches any
+      number of folders,
     - any other path is taken as-is (so an explicit file is never filtered out).
     """
     from glob import glob
@@ -292,7 +293,7 @@ def collect_videos(paths: Sequence[str | Path], *, extensions=VIDEO_EXTENSIONS) 
             ]
         elif any(ch in str(raw) for ch in "*?["):
             collected += [
-                Path(g) for g in sorted(glob(str(raw))) if Path(g).suffix.lower() in extensions
+                Path(g) for g in sorted(glob(str(raw), recursive=True)) if Path(g).suffix.lower() in extensions
             ]
         else:
             collected.append(p)

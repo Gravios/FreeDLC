@@ -28,7 +28,7 @@ Installation is described in the [README](../README.md#install).
 | `migrate <legacy> <dest>` | convert a legacy DeepLabCut project (config.yaml tree) |
 | `info <project>` | the task and markers, and how many videos, annotated videos, models and runs |
 | `add-video <project> <videos...>` | register original (or, with `--processed`, downscaled) videos |
-| `videos <project>` | what is registered, labeled and extracted per video; `--register DIR` pairs a folder of processed videos |
+| `videos <project>` | what is registered, labeled and extracted per video; `--register PATH...` pairs processed videos with their originals |
 | `extract [<video>] --project P` | frames to annotate; `--from-run` adds frames chosen from a model's results |
 | `annotate <video> --project P` | napari on the full-resolution frames |
 | `purge --unlabeled-frames` / `--labeled-videos` | remove extracted frames with no marker placed, or the labeled videos of analyze runs |
@@ -276,26 +276,35 @@ the stored media but never writes to the file a previous symlink pointed at.
 A processed video is optional. A project with only originals works; see
 "Projects without processed videos" under Use cases.
 
-### Registering a whole folder: `videos --register`
+### Registering processed videos by name: `videos --register`
 
 Processed videos usually come as a folder made from the originals -- `reduced/`,
-`reduced-640x360/`, `triplet/`. `--register` pairs such a folder with the
-originals by name, so no `--video-id` is needed:
+`reduced-640x360/`, `triplet/` -- or sit beside them (`preprocess` writes
+`<name>-triplet.mp4` next to `<name>.mp4`). `--register` pairs them with the
+originals by name, so no `--video-id` is needed. It takes files, folders and
+glob patterns, any number of them:
 
 ```bash
 fdlc videos ws --register /data/video/reduced-640x360
+fdlc videos ws --register /data/video/thakorN/**/*.cam1-triplet.mp4      # the shell expands it
+fdlc videos ws --register '/data/video/thakorN/**/*.cam1-triplet.mp4'    # or fdlc does, into subfolders
 fdlc extract --all --project ws --match-original
 ```
 
+Name the project before `--register` (or leave it out inside the project): every
+path after `--register` is taken as a video.
+
 A file belongs to an original when its name is the original's name, optionally
 followed by a suffix: `Session1_640x360.mp4` and `Session1-triplet.mp4` both
-belong to `session1`. The folder is taken as a whole. If any video in it matches
-no original, or two match the same one, the mismatches are listed and **nothing
-is changed**. Labeled `.fdlc.mp4` videos in the folder are ignored.
+belong to `session1`. The files are taken as a whole. If any of them matches no
+original, or two match the same one, the mismatches are listed and **nothing is
+changed** -- narrow the pattern (`*.cam1-triplet.mp4`, not `*-triplet.mp4`, when
+only the cam1 originals are registered). The originals' own files, so a folder
+holding both, and labeled `.fdlc.mp4` videos are skipped.
 
 Each matched original gets the file as its processed video, replacing the one it
 had; the previous file is not touched, only the link to it. Originals with no
-video in the folder keep what they had. Any number of folders can be kept side
+video among them keep what they had. Any number of folders can be kept side
 by side and switched between this way -- the project points at one at a time.
 
 The frames in `frames/processed/` were read from the previous videos, so run
